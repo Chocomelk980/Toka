@@ -1,0 +1,213 @@
+* {
+    box-sizing: border-box;
+}
+
+:root {
+    --bg: #5c1a22;
+    --card: #ffffff;
+    --text: #1a0c0f;
+    --muted: #737887;
+    --field-border: #efaeb4;
+    --field-focus: #c85d67;
+    --button: #bd4f5a;
+    --button-hover: #aa444f;
+    --link: #1677ff;
+    --error-bg: #fff1f2;
+    --error-border: #f4c3c8;
+    --success-bg: #edfdf3;
+    --success-border: #b8e4c8;
+}
+
+html,
+body {
+    margin: 0;
+    min-height: 100%;
+    font-family: Arial, Helvetica, sans-serif;
+}
+
+body {
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 18px;
+}
+
+.auth-card {
+    width: min(450px, 100%);
+    background: var(--card);
+    border-radius: 17px;
+    padding: 34px 40px 38px;
+    box-shadow: 0 18px 45px rgba(0, 0, 0, 0.20);
+}
+
+.auth-header {
+    text-align: center;
+    margin-bottom: 25px;
+}
+
+.toka-logo {
+    width: 48px;
+    height: 54px;
+    display: block;
+    object-fit: contain;
+    margin: 0 auto 4px;
+}
+
+.auth-title {
+    font-size: 28px;
+    line-height: 1.1;
+    font-weight: 700;
+    margin: 0 0 8px;
+    letter-spacing: -0.4px;
+}
+
+.auth-subtitle {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+}
+
+.auth-form {
+    margin-top: 2px;
+}
+
+.field {
+    margin-bottom: 17px;
+}
+
+.field label {
+    display: block;
+    font-size: 14px;
+    font-weight: 500;
+    margin-bottom: 8px;
+}
+
+.input-wrap {
+    position: relative;
+}
+
+.input-wrap input {
+    width: 100%;
+    height: 46px;
+    border: 1px solid var(--field-border);
+    border-radius: 10px;
+    padding: 0 16px;
+    font-size: 14px;
+    color: var(--text);
+    outline: none;
+    background: #fff;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.input-wrap input::placeholder {
+    color: #96949a;
+}
+
+.input-wrap input:focus {
+    border-color: var(--field-focus);
+    box-shadow: 0 0 0 3px rgba(189, 79, 90, 0.10);
+}
+
+.input-wrap.has-toggle input {
+    padding-right: 48px;
+}
+
+.password-toggle {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 30px;
+    height: 30px;
+    border: 0;
+    background: transparent;
+    color: #7b808d;
+    cursor: pointer;
+    font-size: 16px;
+    padding: 0;
+}
+
+.auth-button {
+    width: 100%;
+    height: 48px;
+    border: 0;
+    border-radius: 10px;
+    background: var(--button);
+    color: #fff;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    margin-top: 6px;
+    transition: background 0.15s ease, transform 0.05s ease;
+}
+
+.auth-button:hover {
+    background: var(--button-hover);
+}
+
+.auth-button:active {
+    transform: translateY(1px);
+}
+
+.switch-text {
+    text-align: center;
+    margin: 17px 0 0;
+    color: var(--muted);
+    font-size: 14px;
+}
+
+.switch-text a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+.switch-text a:hover {
+    text-decoration: underline;
+}
+
+.alert {
+    border-radius: 10px;
+    padding: 11px 13px;
+    margin-bottom: 18px;
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.alert.error {
+    color: #8c2833;
+    background: var(--error-bg);
+    border: 1px solid var(--error-border);
+}
+
+.alert.success {
+    color: #25613e;
+    background: var(--success-bg);
+    border: 1px solid var(--success-border);
+}
+
+.auth-dialog { position: fixed; inset: 0; width: min(430px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); margin: auto; padding: 28px; overflow: auto; border: 1px solid #e4a5b6; border-radius: 15px; color: #38252d; background: #fff; box-shadow: 0 20px 70px #1d071b40; }
+.auth-dialog::backdrop { background: #22151cb8; }
+.auth-dialog-mark { display: grid; width: 38px; height: 38px; place-items: center; margin-bottom: 18px; border-radius: 11px; background: #fbe7ed; color: #933047; font-size: 23px; font-weight: 700; }
+.auth-dialog h2 { margin: 0 0 12px; font-size: 20px; }
+.auth-dialog p { margin: 0; color: #7c6671; font-size: 13px; line-height: 1.7; }
+.auth-dialog-actions { display: flex; justify-content: flex-end; margin-top: 24px; }
+.auth-dialog-actions button { min-height: 39px; padding: 8px 22px; border: 1px solid #933047; border-radius: 7px; color: #fff; background: #933047; font: inherit; font-size: 12px; cursor: pointer; }
+.auth-dialog-actions button:hover { background: #752237; border-color: #752237; }
+.auth-dialog :focus-visible { outline: 3px solid #ad6177; outline-offset: 3px; }
+
+@media (max-width: 520px) {
+    body {
+        padding: 16px;
+    }
+
+    .auth-card {
+        padding: 30px 24px 32px;
+    }
+
+    .auth-title {
+        font-size: 25px;
+    }
+}
