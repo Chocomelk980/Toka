@@ -1,5 +1,7 @@
 <?php
 session_start();
+require_once __DIR__ . '/../LOGIN_PAGE/access.php';
+tokaRequireRole();
 require_once __DIR__ . '/../LOGIN_PAGE/dbconnect.php';
 
 if (!isset($_SESSION['user']) || (int) ($_SESSION['user']['user_id'] ?? 0) < 1) {
@@ -179,8 +181,8 @@ if ($groupId) {
             if ($currentRound) {
                 $stmt = $pdo->prepare(
                     'SELECT p.payment_id, p.member_id, p.payment_status, p.is_member_confirmed,
-                            p.is_operator_verified, p.transaction_no, p.submitted_at,
-                            p.amount_due, gpc.channel_type
+                            p.is_cooperator_verified, p.is_operator_verified, p.transaction_no,
+                            p.submitted_at, p.amount_due, p.late_fee_applied, gpc.channel_type
                      FROM payments p
                      LEFT JOIN group_payment_channels gpc ON gpc.channel_id = p.channel_id
                      WHERE p.round_id = :round_id
@@ -270,6 +272,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $group && $loadError === '') {
     $validToken = is_string($submittedToken) && isset($_SESSION[$tokenKey])
         && hash_equals($_SESSION[$tokenKey], $submittedToken);
     $isOperator = ($currentMember['role'] ?? '') === 'Main Operator';
+    $isCoOperator = ($currentMember['role'] ?? '') === 'Co-Operator';
+    $canFreezeGroup = in_array($currentMember['role'] ?? '', ['Main Operator', 'Co-Operator'], true);
     $isRecipient = $currentRound && (int) $currentRound['receiver_member_id'] === (int) ($currentMember['member_id'] ?? 0);
 
     if (!$validToken) {
@@ -285,9 +289,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $group && $loadError === '') {
                 $stmt->execute([':group_id' => $groupId]);
                 $lockedGroup = $stmt->fetch();
                 $stmt = $pdo->prepare(
-                    'SELECT request_id, user_id FROM join_requests
-                     WHERE request_id = :request_id AND group_id = :group_id
-                       AND request_status = :status FOR UPDATE'
+                    'SELECT jr.request_id, jr.user_id, u.is_admin FROM join_requests jr
+                     JOIN users u ON u.user_id = jr.user_id
+                     WHERE jr.request_id = :request_id AND jr.group_id = :group_id
+                       AND jr.request_status = :status FOR UPDATE'
                 );
                 $stmt->execute([':request_id' => $requestId, ':group_id' => $groupId, ':status' => 'Pending']);
                 $request = $stmt->fetch();
@@ -295,6 +300,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $group && $loadError === '') {
                 if (!$lockedGroup || !$request) {
                     $pdo->rollBack();
                     $actionMessage = 'This join request has already been handled.';
+                } elseif ($action === 'approve_join' && (bool) $request['is_admin']) {
+                    $pdo->rollBack();
+                    $actionMessage = 'The admin account cannot join groups.';
                 } elseif ($action === 'reject_join') {
                     $stmt = $pdo->prepare(
                         'UPDATE join_requests SET request_status = :status, responded_at = NOW(), responded_by = :operator
@@ -457,20 +465,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $group && $loadError === '') {
                 $lateDays = $secondsLate > 0 ? (int) ceil($secondsLate / 86400) : 0;
                 $lateFee = round((float) $lockedGroup['late_fee_rate'] * $lateDays, 2);
                 $contribution = (float) $lockedGroup['contribution_amount'];
+                $submitterRole = $currentMember['role'] ?? 'Member';
+                $cooperatorVerifiedAtSubmission = $submitterRole === 'Co-Operator' ? 1 : 0;
+                $operatorVerifiedAtSubmission = $submitterRole === 'Main Operator' ? 1 : 0;
+                $nextApprover = $submitterRole === 'Co-Operator' ? 'Main Operator' : 'Co-Operator';
 
                 $stmt = $pdo->prepare(
                     'INSERT INTO payments
                         (round_id, member_id, channel_id, amount_due, late_fee_applied, transaction_no,
-                         is_member_confirmed, is_operator_verified, payment_status)
+                         is_member_confirmed, is_cooperator_verified, is_operator_verified, payment_status)
                      VALUES (:round_id, :member_id, :channel_id, :amount_due, :late_fee, :transaction_no,
-                             :member_confirmed, :operator_verified, :payment_status)'
+                             :member_confirmed, :cooperator_verified, :operator_verified, :payment_status)'
                 );
                 $stmt->execute([
                     ':round_id' => $lockedRound['round_id'], ':member_id' => (int) $lockedMemberId,
                     ':channel_id' => $channelId, ':amount_due' => number_format($contribution, 2, '.', ''),
                     ':late_fee' => number_format($lateFee, 2, '.', ''),
                     ':transaction_no' => $paymentFormState['transaction_no'],
-                    ':member_confirmed' => 1, ':operator_verified' => 0,
+                    ':member_confirmed' => 1,
+                    ':cooperator_verified' => $cooperatorVerifiedAtSubmission,
+                    ':operator_verified' => $operatorVerifiedAtSubmission,
                     ':payment_status' => 'Pending Verification',
                 ]);
                 $paymentId = (int) $pdo->lastInsertId();
@@ -482,11 +496,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $group && $loadError === '') {
                     ':group_id' => $groupId, ':round_id' => $lockedRound['round_id'],
                     ':payment_id' => $paymentId, ':actor' => $userId,
                     ':activity' => 'Payment Submitted',
-                    ':details' => 'Transaction ' . $paymentFormState['transaction_no'] . ' submitted for verification',
-                    ':verification' => 'Pending Verification',
+                    ':details' => 'Transaction ' . $paymentFormState['transaction_no'] . ' submitted for ' . $nextApprover . ' approval',
+                    ':verification' => 'Pending ' . $nextApprover,
                 ]);
                 $pdo->commit();
-                $_SESSION['group_dashboard_flash'][$groupId] = 'Payment submitted. It is awaiting operator verification.';
+                $_SESSION['group_dashboard_flash'][$groupId] = 'Payment submitted. It is awaiting ' . strtolower($nextApprover) . ' approval.';
                 header('Location: group_dashboard.php?id=' . $groupId);
                 exit;
             } catch (Throwable $e) {
@@ -500,7 +514,126 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $group && $loadError === '') {
             }
         }
         $openPaymentDialog = true;
-    } elseif ($action === 'freeze' && $isOperator && $group['group_status'] === 'Active') {
+    } elseif ($action === 'review_payment') {
+        $paymentId = filter_var($_POST['payment_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        $decision = is_string($_POST['decision'] ?? null) ? $_POST['decision'] : '';
+        if (!$paymentId || !in_array($decision, ['approve', 'reject'], true) || (!$isCoOperator && !$isOperator) || !$currentRound) {
+            $actionMessage = 'This payment is not available for your approval.';
+        } else {
+            try {
+                $pdo->beginTransaction();
+                $stmt = $pdo->prepare(
+                    'SELECT p.payment_id, p.payment_status, p.is_cooperator_verified,
+                            p.is_operator_verified, p.transaction_no,
+                            rs.round_status, rs.actual_disbursement_date, pg.group_status
+                     FROM payments p
+                     JOIN round_schedules rs ON rs.round_id = p.round_id
+                     JOIN paluwagan_groups pg ON pg.group_id = rs.group_id
+                     WHERE p.payment_id = :payment_id AND p.round_id = :round_id
+                       AND pg.group_id = :group_id
+                     FOR UPDATE'
+                );
+                $stmt->execute([
+                    ':payment_id' => $paymentId, ':round_id' => $currentRound['round_id'],
+                    ':group_id' => $groupId,
+                ]);
+                $reviewPayment = $stmt->fetch();
+
+                if (!$reviewPayment || $reviewPayment['group_status'] !== 'Active'
+                    || $reviewPayment['round_status'] !== 'Ongoing'
+                    || $reviewPayment['actual_disbursement_date'] !== null
+                    || $reviewPayment['payment_status'] !== 'Pending Verification') {
+                    throw new RuntimeException('This payment is no longer awaiting approval.');
+                }
+
+                $coOperatorApproved = (bool) $reviewPayment['is_cooperator_verified'];
+                $operatorApproved = (bool) $reviewPayment['is_operator_verified'];
+                $isCoOperatorStage = $isCoOperator && !$coOperatorApproved;
+                $isMainOperatorStage = $isOperator && $coOperatorApproved && !$operatorApproved;
+                if (!$isCoOperatorStage && !$isMainOperatorStage) {
+                    throw new RuntimeException('This payment is not awaiting your approval stage.');
+                }
+
+                $approverRole = $isCoOperatorStage ? 'Co-Operator' : 'Main Operator';
+                if ($decision === 'reject') {
+                    $stmt = $pdo->prepare(
+                        'UPDATE payments
+                         SET payment_status = :unpaid, is_cooperator_verified = 0, is_operator_verified = 0
+                         WHERE payment_id = :payment_id AND payment_status = :pending
+                           AND is_cooperator_verified = :cooperator_verified
+                           AND is_operator_verified = :operator_verified'
+                    );
+                    $stmt->execute([
+                        ':unpaid' => 'Unpaid', ':payment_id' => $paymentId,
+                        ':pending' => 'Pending Verification', ':cooperator_verified' => $coOperatorApproved ? 1 : 0,
+                        ':operator_verified' => $operatorApproved ? 1 : 0,
+                    ]);
+                    $activity = 'Payment Rejected';
+                    $verificationStatus = 'Rejected by ' . $approverRole;
+                    $details = 'Transaction ' . ($reviewPayment['transaction_no'] ?: 'N/A') . ' rejected by ' . $approverRole;
+                    $paymentIsVerified = false;
+                } elseif ($isCoOperatorStage) {
+                    $stmt = $pdo->prepare(
+                        'UPDATE payments
+                         SET is_cooperator_verified = 1,
+                             payment_status = CASE WHEN is_operator_verified = 1 THEN :verified ELSE payment_status END
+                         WHERE payment_id = :payment_id AND payment_status = :pending
+                           AND is_cooperator_verified = 0 AND is_operator_verified = :operator_verified'
+                    );
+                    $stmt->execute([
+                        ':verified' => 'Verified', ':payment_id' => $paymentId,
+                        ':pending' => 'Pending Verification', ':operator_verified' => $operatorApproved ? 1 : 0,
+                    ]);
+                    $paymentIsVerified = $operatorApproved;
+                    $activity = $paymentIsVerified ? 'Payment Verified' : 'Payment Approved by Co-Operator';
+                    $verificationStatus = $paymentIsVerified ? 'Verified' : 'Pending Main Operator';
+                    $details = 'Transaction ' . ($reviewPayment['transaction_no'] ?: 'N/A') . ' approved by Co-Operator'
+                        . ($paymentIsVerified ? '; Main Operator approval skipped because the payer is the Main Operator' : '');
+                } else {
+                    $stmt = $pdo->prepare(
+                        'UPDATE payments SET payment_status = :verified, is_operator_verified = 1
+                         WHERE payment_id = :payment_id AND payment_status = :pending
+                           AND is_cooperator_verified = 1 AND is_operator_verified = 0'
+                    );
+                    $stmt->execute([
+                        ':verified' => 'Verified', ':payment_id' => $paymentId,
+                        ':pending' => 'Pending Verification',
+                    ]);
+                    $activity = 'Payment Verified';
+                    $verificationStatus = 'Verified';
+                    $details = 'Transaction ' . ($reviewPayment['transaction_no'] ?: 'N/A') . ' verified by Main Operator';
+                    $paymentIsVerified = true;
+                }
+
+                if ($stmt->rowCount() !== 1) {
+                    throw new RuntimeException('This payment was updated by another approver. Refresh and try again.');
+                }
+                $pdo->prepare(
+                    'INSERT INTO audit_logs
+                        (group_id, round_id, payment_id, actor_user_id, activity_type, details, verification_status)
+                     VALUES (:group_id, :round_id, :payment_id, :actor, :activity, :details, :verification)'
+                )->execute([
+                    ':group_id' => $groupId, ':round_id' => $currentRound['round_id'],
+                    ':payment_id' => $paymentId, ':actor' => $userId,
+                    ':activity' => $activity, ':details' => $details, ':verification' => $verificationStatus,
+                ]);
+                $pdo->commit();
+                $_SESSION['group_dashboard_flash'][$groupId] = $decision === 'reject'
+                    ? 'Payment rejected.'
+                    : ($paymentIsVerified ? 'Payment verified.' : 'Payment approved. It is awaiting Main Operator approval.');
+                header('Location: group_dashboard.php?id=' . $groupId);
+                exit;
+            } catch (Throwable $e) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                if ($e instanceof RuntimeException) {
+                    $actionMessage = $e->getMessage();
+                } else {
+                    error_log('Payment approval error: ' . $e->getMessage());
+                    $actionMessage = 'The payment approval could not be saved. Please try again.';
+                }
+            }
+        }
+    } elseif ($action === 'freeze' && $canFreezeGroup && $group['group_status'] === 'Active') {
         try {
             $pdo->beginTransaction();
             $stmt = $pdo->prepare(
@@ -512,7 +645,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $group && $loadError === '') {
             $pdo->prepare(
                 'INSERT INTO audit_logs (group_id, actor_user_id, activity_type, details)
                  VALUES (:group_id, :actor, :activity, :details)'
-            )->execute([':group_id' => $groupId, ':actor' => $userId, ':activity' => 'Group Frozen', ':details' => 'Group frozen by Main Operator']);
+            )->execute([':group_id' => $groupId, ':actor' => $userId, ':activity' => 'Group Frozen', ':details' => 'Group frozen by ' . $currentMember['role']]);
             $pdo->commit();
             header('Location: group_dashboard.php?id=' . $groupId);
             exit;
@@ -625,10 +758,13 @@ $roundNumber = (int) ($currentRound['round_number'] ?? 1);
 $roundStatus = $currentRound['round_status'] ?? '';
 $groupStatus = (string) ($group['group_status'] ?? 'Waiting');
 $isOperator = ($currentMember['role'] ?? '') === 'Main Operator';
+$isCoOperator = ($currentMember['role'] ?? '') === 'Co-Operator';
+$canFreezeGroup = in_array($currentMember['role'] ?? '', ['Main Operator', 'Co-Operator'], true);
 $isRecipient = $currentRound && (int) $currentRound['receiver_member_id'] === (int) ($currentMember['member_id'] ?? 0);
 $hasDisbursed = $currentRound && $currentRound['actual_disbursement_date'] !== null;
-$canSubmitPayment = $groupStatus === 'Active' && $currentRound
-    && $roundStatus === 'Ongoing' && !$hasDisbursed && $channels && !$currentMemberPaymentLocked;
+$paymentCycleIsOpen = $groupStatus === 'Active' && $currentRound
+    && $roundStatus === 'Ongoing' && !$hasDisbursed && count($channels) > 0;
+$canSubmitPayment = $paymentCycleIsOpen && !$currentMemberPaymentLocked;
 $paymentLateDays = 0;
 if ($currentRound && !empty($currentRound['target_deadline'])) {
     try {
@@ -688,21 +824,30 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= $group ? h($group['group_name']) . ' - Toka Dashboard' : 'Group Dashboard - Toka' ?></title>
     <link rel="stylesheet" href="group_dashboard.css?v=<?= filemtime(__DIR__ . '/group_dashboard.css') ?>">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="icon" type="image/svg+xml" href="../assets/toka_icon.svg">
 </head>
 <body>
 <div class="dashboard-layout">
     <aside class="group-sidebar">
         <a class="brand" href="my_groups.php" aria-label="Toka home"><img src="../assets/Toka.svg" alt="Toka"></a>
         <nav class="side-nav" aria-label="Main navigation">
-            <a href="my_groups.php"><span class="nav-symbol">♟</span> My Groups</a>
+            <a href="my_groups.php">
+                <span class="nav-symbol"><i class="fa-solid fa-users"></i></span> My Groups
+            </a>
             <?php if ($group): ?>
-                <a class="selected" href="group_dashboard.php?id=<?= (int) $groupId ?>"><span class="nav-symbol">⌂</span> Dashboard</a>
+                <a class="selected" href="group_dashboard.php?id=<?= (int) $groupId ?>">
+                    <span class="nav-symbol"><i class="fa-solid fa-border-all"></i></span> Dashboard
+                </a>
             <?php endif; ?>
         </nav>
+
         <div class="sidebar-profile">
             <span class="avatar"><?= h(strtoupper(substr($username, 0, 1))) ?></span>
             <span class="sidebar-username"><?= h($username) ?></span>
-            <a class="logout-link" href="../LOGIN_PAGE/logout.php" aria-label="Log out">⇥</a>
+            <a class="logout-link" href="../LOGIN_PAGE/logout.php" aria-label="Log out">
+                <i class="fa-solid fa-right-from-bracket"></i>
+            </a>
         </div>
     </aside>
 
@@ -726,12 +871,12 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                         <?php endif; ?>
                     </div>
                     <p class="round-subtitle"><?= h($roundSubtitle) ?></p>
-                    <div class="collection-progress" role="progressbar" aria-label="Current round collected"
+                    <div class="collection-progress" role="progressbar" aria-label="Payments submitted this round"
                          aria-valuemin="0" aria-valuemax="100" aria-valuenow="<?= $collectionPercent ?>">
                         <span style="width: <?= $collectionPercent ?>%"></span>
                     </div>
                     <p class="collection-caption">
-                        <?= h(number_format($roundCollected, 2)) ?> / <?= h(number_format($roundExpected, 2)) ?> collected this round
+                        <?= h(number_format($roundCollected, 2)) ?> / <?= h(number_format($roundExpected, 2)) ?> verified this round
                         <span> | </span><?= h($progressNote) ?>
                     </p>
                 </div>
@@ -766,11 +911,29 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                     <?php
                     $payment = $memberPayments[(int) $member['member_id']] ?? null;
                     $memberIsRecipient = $currentRound && (int) $currentRound['receiver_member_id'] === (int) $member['member_id'];
-                    $memberPaymentState = 'Awaiting Payment';
-                    if ($payment && $payment['payment_status'] === 'Verified') $memberPaymentState = 'Verified';
-                    elseif ($payment && $payment['payment_status'] === 'Pending Verification') $memberPaymentState = 'Awaiting Confirmation';
-                    elseif ($payment && $payment['payment_status'] === 'Rejected') $memberPaymentState = 'Payment Rejected';
-                    elseif ($memberIsRecipient && $hasDisbursed && !$receiptClaimed) $memberPaymentState = 'Confirm Pot Receipt';
+                    $memberPaymentState = 'Unpaid';
+                    $memberPaymentTone = 'unpaid';
+                    if ($payment && $payment['payment_status'] === 'Verified') {
+                        $memberPaymentState = 'Verified';
+                        $memberPaymentTone = 'verified';
+                    } elseif ($payment && $payment['payment_status'] === 'Pending Verification'
+                        && !empty($payment['is_cooperator_verified'])) {
+                        $memberPaymentState = 'Pending Main Operator';
+                        $memberPaymentTone = 'pending-operator';
+                    } elseif ($payment && $payment['payment_status'] === 'Pending Verification') {
+                        $memberPaymentState = 'Pending Co-Operator';
+                        $memberPaymentTone = 'awaiting';
+                    } elseif ($memberIsRecipient && $hasDisbursed && !$receiptClaimed) {
+                        $memberPaymentState = 'Confirm Pot Receipt';
+                        $memberPaymentTone = 'awaiting';
+                    }
+                    $paymentNeedsCoOperator = $payment && $payment['payment_status'] === 'Pending Verification'
+                        && empty($payment['is_cooperator_verified']);
+                    $paymentNeedsMainOperator = $payment && $payment['payment_status'] === 'Pending Verification'
+                        && !empty($payment['is_cooperator_verified']) && empty($payment['is_operator_verified']);
+                    $canReviewMemberPayment = $groupStatus === 'Active' && $currentRound
+                        && $roundStatus === 'Ongoing' && !$hasDisbursed
+                        && (($isCoOperator && $paymentNeedsCoOperator) || ($isOperator && $paymentNeedsMainOperator));
                     ?>
                     <article class="member-card" data-role="<?= h($member['role']) ?>">
                         <div class="member-left">
@@ -780,20 +943,30 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                             <div class="member-description">
                                 <div class="member-name-line">
                                     <strong><?= h($member['username']) ?></strong>
-                                    <?php if ($member['account_status'] === 'Active'): ?><span class="verified-badge">Verified</span><?php else: ?><span class="account-badge"><?= h($member['account_status']) ?></span><?php endif; ?>
+                                    <?php if ($member['account_status'] !== 'Active'): ?><span class="account-badge"><?= h($member['account_status']) ?></span><?php endif; ?>
                                 </div>
                                 <span class="member-role"><?= h($member['role']) ?></span>
-                                <?php if ($payment): ?>
+                                <?php if ($payment && in_array($payment['payment_status'], ['Pending Verification', 'Verified'], true)): ?>
                                     <span class="payment-detail">Paid via <?= h($payment['channel_type'] ?: 'Payment channel') ?> | Txn #: <?= h($payment['transaction_no'] ?: 'N/A') ?></span>
-                                <?php elseif ($member['role'] === 'Co-Operator'): ?>
+                                <?php elseif (!$payment && $member['role'] === 'Co-Operator'): ?>
                                     <span class="payment-detail">Payment channel details are on file</span>
+                                <?php endif; ?>
+                                <?php if ($canReviewMemberPayment): ?>
+                                    <button class="payment-review-trigger" type="button" data-open-payment-review
+                                            data-payment-id="<?= (int) $payment['payment_id'] ?>"
+                                            data-member-name="<?= h($member['username']) ?>"
+                                            data-payment-channel="<?= h($payment['channel_type'] ?: 'Payment channel') ?>"
+                                            data-transaction-number="<?= h($payment['transaction_no'] ?: 'N/A') ?>"
+                                            data-payment-amount="PHP <?= h(number_format((float) $payment['amount_due'] + (float) $payment['late_fee_applied'], 2)) ?>">
+                                        Review Payment
+                                    </button>
                                 <?php endif; ?>
                             </div>
                         </div>
                         <div class="member-right">
                             <strong>Trust: <?= (int) $member['trust_score'] ?></strong>
                             <span class="slot-badge">Slot #<?= (int) $member['assigned_slot_number'] ?></span>
-                            <span class="payment-state <?= $memberPaymentState === 'Verified' ? 'verified' : ($memberPaymentState === 'Payment Rejected' ? 'rejected' : 'awaiting') ?>"><?= h($memberPaymentState) ?></span>
+                            <span class="payment-state <?= h($memberPaymentTone) ?>"><?= h($memberPaymentState) ?></span>
                         </div>
                     </article>
                 <?php endforeach; ?>
@@ -851,20 +1024,25 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                     </div>
                 </div>
                 <div class="operator-actions">
-                    <?php if ($canSubmitPayment): ?>
-                        <button class="operator-button pay-button" type="button" data-open-payment>Submit Pay</button>
-                    <?php else: ?>
-                        <button class="operator-button muted-button" type="button" disabled>Submit Pay</button>
+                    <div class="payment-action">
+                        <?php if ($canSubmitPayment): ?>
+                            <button class="operator-button pay-button" type="button" data-open-payment>Submit payment</button>
+                        <?php elseif ($currentMemberPaymentLocked): ?>
+                            <button class="operator-button muted-button" type="button" disabled aria-describedby="payment-submitted-message">Submit payment</button>
+                            <span class="payment-submitted-message" id="payment-submitted-message" role="status">You already submitted your payment for this cycle.</span>
+                        <?php else: ?>
+                            <button class="operator-button muted-button" type="button" disabled>Submit payment</button>
+                        <?php endif; ?>
+                    </div>
+                    <?php if ($isOperator): ?>
+                        <?php if ($groupStatus === 'Active' && $currentRound && $roundStatus === 'Ongoing' && !$hasDisbursed): ?>
+                            <?= actionButton('Disburse pot', true, 'disburse', $csrfToken) ?>
+                        <?php else: ?>
+                            <button class="operator-button muted-button" type="button" disabled>Disburse pot</button>
+                        <?php endif; ?>
                     <?php endif; ?>
-                    <?php if ($isOperator && $groupStatus === 'Active' && $currentRound && $roundStatus === 'Ongoing' && !$hasDisbursed): ?>
-                        <?= actionButton('Pot Disbursed', true, 'disburse', $csrfToken) ?>
-                    <?php else: ?>
-                        <button class="operator-button muted-button" type="button" disabled>Pot Disbursed</button>
-                    <?php endif; ?>
-                    <?php if ($isOperator && $groupStatus === 'Active'): ?>
+                    <?php if ($canFreezeGroup && $groupStatus === 'Active'): ?>
                         <?= actionButton('Freeze Group', true, 'freeze', $csrfToken) ?>
-                    <?php else: ?>
-                        <button class="operator-button freeze-button" type="button" disabled>Freeze Group</button>
                     <?php endif; ?>
                     <?php if ($isRecipient && $currentRound && $hasDisbursed && !$receiptClaimed): ?>
                         <?= actionButton('Claim Pot', true, 'claim', $csrfToken) ?>
@@ -873,6 +1051,31 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                     <?php endif; ?>
                 </div>
             </section>
+
+            <?php if ($isOperator || $isCoOperator): ?>
+                <dialog class="dashboard-dialog payment-review-dialog" id="payment-review-dialog">
+                    <h2>Verify Payment</h2>
+                    <p class="payment-review-intro">Review <strong data-review-member></strong>'s submission before verifying.</p>
+                    <section class="payment-review-panel" aria-label="Payment details">
+                        <h3>PAYMENT DETAILS</h3>
+                        <dl class="dialog-details">
+                            <div><dt>Member</dt><dd data-review-member-detail></dd></div>
+                            <div><dt>Payment Channel</dt><dd data-review-channel></dd></div>
+                            <div><dt>Transaction No.</dt><dd data-review-transaction></dd></div>
+                            <div><dt>Amount</dt><dd data-review-amount></dd></div>
+                        </dl>
+                    </section>
+                    <form method="post" class="payment-review-form">
+                        <input type="hidden" name="csrf_token" value="<?= h($csrfToken) ?>">
+                        <input type="hidden" name="action" value="review_payment">
+                        <input type="hidden" name="payment_id" data-review-payment-id>
+                        <div class="payment-dialog-actions">
+                            <button class="payment-review-reject" type="submit" name="decision" value="reject">Reject</button>
+                            <button class="payment-confirm" type="submit" name="decision" value="approve">Verify Payment</button>
+                        </div>
+                    </form>
+                </dialog>
+            <?php endif; ?>
 
             <?php if ($canSubmitPayment || $openPaymentDialog): ?>
                 <dialog class="dashboard-dialog payment-dialog" id="payment-dialog">
@@ -934,6 +1137,23 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
     <?php if ($openPaymentDialog): ?>
         paymentDialog?.showModal();
     <?php endif; ?>
+
+    const paymentReviewDialog = document.getElementById('payment-review-dialog');
+    document.querySelectorAll('[data-open-payment-review]').forEach(button => {
+        button.addEventListener('click', () => {
+            if (!paymentReviewDialog) return;
+            paymentReviewDialog.querySelector('[data-review-payment-id]').value = button.dataset.paymentId || '';
+            paymentReviewDialog.querySelector('[data-review-member]').textContent = button.dataset.memberName || '';
+            paymentReviewDialog.querySelector('[data-review-member-detail]').textContent = button.dataset.memberName || '';
+            paymentReviewDialog.querySelector('[data-review-channel]').textContent = button.dataset.paymentChannel || '';
+            paymentReviewDialog.querySelector('[data-review-transaction]').textContent = button.dataset.transactionNumber || '';
+            paymentReviewDialog.querySelector('[data-review-amount]').textContent = button.dataset.paymentAmount || '';
+            paymentReviewDialog.showModal();
+        });
+    });
+    paymentReviewDialog?.addEventListener('click', event => {
+        if (event.target === paymentReviewDialog) paymentReviewDialog.close();
+    });
 
 
     const memberFilter = document.getElementById('member-filter');

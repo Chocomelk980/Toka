@@ -1,14 +1,17 @@
 <?php
 session_start();
+require_once __DIR__ . '/access.php';
 
-if (isset($_SESSION['user'])) {
-    header('Location: ../DASHBOARD/my_groups.php');
+$signedInUser = tokaCurrentUser();
+if ($signedInUser) {
+    header('Location: ' . tokaHome($signedInUser), true, 303);
     exit;
 }
 
 $error = $_SESSION['auth_error'] ?? '';
 $success = $_SESSION['auth_success'] ?? '';
-unset($_SESSION['auth_error'], $_SESSION['auth_success']);
+$bannedLogin = !empty($_SESSION['auth_banned_login']);
+unset($_SESSION['auth_error'], $_SESSION['auth_success'], $_SESSION['auth_banned_login']);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -16,17 +19,21 @@ unset($_SESSION['auth_error'], $_SESSION['auth_success']);
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Toka - Log In</title>
-    <link rel="stylesheet" href="auth.css">
+    <link rel="stylesheet" href="auth.css?v=<?= filemtime(__DIR__ . '/auth.css') ?>">
 </head>
 <body>
-    <main class="auth-card">
+    <img src="../assets/background.svg" class="auth-bg" alt="" aria-hidden="true">
+
+    <main class="auth-card login-card">
         <header class="auth-header">
-            <img class="toka-logo" src="../assets/toka_bird.svg" alt="Toka">
+            <a href="../index.php">
+               <img class="toka-logo" src="../assets/toka_auth.svg" alt="Toka"> 
+            </a>
             <h1 class="auth-title">Welcome Back!</h1>
             <p class="auth-subtitle">Ready to jump back in?</p>
         </header>
 
-        <?php if ($error !== ''): ?>
+        <?php if ($error !== '' && !$bannedLogin): ?>
             <div class="alert error"><?= htmlspecialchars($error) ?></div>
         <?php endif; ?>
 
@@ -48,11 +55,13 @@ unset($_SESSION['auth_error'], $_SESSION['auth_success']);
             <div class="field">
                 <label for="login_password">Password:</label>
                 <div class="input-wrap has-toggle">
-                    <input id="login_password" name="password" type="password"
-                           placeholder="Enter your Password" autocomplete="current-password" required>
-                    <button class="password-toggle" type="button"
-                            aria-label="Show password"
-                            onclick="togglePassword('login_password', this)">◉</button>
+                    <input type="password" id="password" name="password" placeholder="Enter at least 8 characters" required>
+                    <button type="button" class="password-toggle" onclick="togglePasswordVisibility('password', this)" aria-label="Toggle password visibility">
+                        <svg class="eye-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                            <circle cx="12" cy="12" r="3"></circle>
+                        </svg>
+                    </button>
                 </div>
             </div>
 
@@ -64,13 +73,30 @@ unset($_SESSION['auth_error'], $_SESSION['auth_success']);
         </p>
     </main>
 
+    <?php if ($bannedLogin): ?>
+        <dialog id="banned-login-dialog" class="auth-dialog" aria-labelledby="banned-login-title" aria-describedby="banned-login-message">
+            <form method="dialog">
+                <span class="auth-dialog-mark" aria-hidden="true">!</span>
+                <h2 id="banned-login-title">Account banned</h2>
+                <p id="banned-login-message"><?= htmlspecialchars(TOKA_BANNED_LOGIN_MESSAGE, ENT_QUOTES, 'UTF-8') ?></p>
+                <div class="auth-dialog-actions"><button type="submit" autofocus>OK</button></div>
+            </form>
+        </dialog>
+        <noscript><p class="alert error" role="alert"><?= htmlspecialchars(TOKA_BANNED_LOGIN_MESSAGE, ENT_QUOTES, 'UTF-8') ?></p></noscript>
+    <?php endif; ?>
+
     <script>
-        function togglePassword(inputId, button) {
+        function togglePasswordVisibility(inputId, button) {
             const input = document.getElementById(inputId);
-            const show = input.type === 'password';
-            input.type = show ? 'text' : 'password';
-            button.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
-            button.textContent = show ? '◉' : '◌';
+            if (!input) return;
+
+            const isPassword = input.type === 'password';
+            input.type = isPassword ? 'text' : 'password';
+
+            const eyeIcon = `<svg class="eye-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>`;
+            const eyeOffIcon = `<svg class="eye-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>`;
+
+            button.innerHTML = isPassword ? eyeOffIcon : eyeIcon;
         }
     </script>
 </body>

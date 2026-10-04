@@ -1,5 +1,7 @@
 <?php
 session_start();
+require_once __DIR__ . '/../LOGIN_PAGE/access.php';
+tokaRequireRole();
 require_once __DIR__ . '/../LOGIN_PAGE/dbconnect.php';
 
 if (!isset($_SESSION['user']) || (int) ($_SESSION['user']['user_id'] ?? 0) < 1) {
@@ -141,6 +143,7 @@ $statusClass = strtolower(preg_replace('/[^a-z]+/i', '-', (string) ($group['grou
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= $group ? detailsH($group['group_name']) . ' Details - Toka' : 'Group Details - Toka' ?></title>
     <link rel="stylesheet" href="group_views.css">
+    <link rel="icon" type="image/svg+xml" href="../assets/toka_icon.svg">
 </head>
 <body>
 <div class="views-layout">
