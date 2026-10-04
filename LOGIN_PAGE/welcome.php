@@ -1,12 +1,14 @@
 <?php
 session_start();
+require_once __DIR__ . '/access.php';
 
-if (!isset($_SESSION['user'])) {
+$signedInUser = tokaCurrentUser();
+if (!$signedInUser) {
     header('Location: index.php');
     exit;
 }
 
-header('Location: ../DASHBOARD/my_groups.php');
+header('Location: ' . tokaHome($signedInUser), true, 303);
 exit;
 
 $user = $_SESSION['user'];
