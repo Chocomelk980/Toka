@@ -1,5 +1,7 @@
 <?php
 session_start();
+require_once __DIR__ . '/../LOGIN_PAGE/access.php';
+tokaRequireRole();
 
 if (!isset($_SESSION['user'])) {
     header('Location: ../LOGIN_PAGE/index.php');
@@ -7,6 +9,28 @@ if (!isset($_SESSION['user'])) {
 }
 
 $draft = $_SESSION['draft_group'] ?? [];
+
+function createGroupCalculatedPot(string $contribution, string $slots): string
+{
+    if (!preg_match('/^\d{1,8}(?:\.\d{1,2})?$/D', $contribution)
+        || !preg_match('/^[1-9]\d{0,9}$/D', $slots)) return '';
+
+    $memberSlots = (int) $slots;
+    if ($memberSlots > 2147483647) return '';
+
+    [$whole, $fraction] = array_pad(explode('.', $contribution, 2), 2, '');
+    $contributionCents = (int) $whole * 100 + (int) str_pad($fraction, 2, '0');
+    if ($contributionCents < 1 || $contributionCents > intdiv(9999999999, $memberSlots)) return '';
+
+    $totalCents = $contributionCents * $memberSlots;
+    return intdiv($totalCents, 100) . '.' . str_pad((string) ($totalCents % 100), 2, '0', STR_PAD_LEFT);
+}
+
+// Never display a total restored from a submitted form or an old draft.
+$draft['calculated_total_pot'] = createGroupCalculatedPot(
+    (string) ($draft['contribution_amount'] ?? ''),
+    (string) ($draft['total_member_slots'] ?? '')
+);
 
 $errors = $_SESSION['group_errors'] ?? [];
 unset($_SESSION['group_errors']);
@@ -31,6 +55,7 @@ $username = $_SESSION['user']['username'] ?? 'User';
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Toka - Create New Group</title>
     <link rel="stylesheet" href="dashboard.css?v=<?= filemtime(__DIR__ . '/dashboard.css') ?>">
+    <link rel="icon" type="image/svg+xml" href="../assets/toka_icon.svg">
 </head>
 <body>
     <div class="app">
@@ -116,7 +141,7 @@ $username = $_SESSION['user']['username'] ?? 'User';
 
                                 <div class="field-group">
                                     <label for="calculated_total_pot">Calculated Total Pot</label>
-                                    <input id="calculated_total_pot" name="calculated_total_pot" type="number" required min="0.01" max="99999999.99" step="0.01" value="<?= htmlspecialchars($draft['calculated_total_pot'] ?? '') ?>">
+                                    <input id="calculated_total_pot" type="number" required min="0.01" max="99999999.99" step="0.01" value="<?= htmlspecialchars($draft['calculated_total_pot']) ?>" readonly aria-readonly="true" title="Calculated automatically from the contribution amount and member slots">
                                 </div>
 
                                 <div class="field-group">

@@ -17,16 +17,114 @@ a { color: inherit; text-decoration: none; }
     padding: 26px 18px 14px; color: rgba(255,255,255,.9); background: #a13247;
     view-transition-name: toka-sidebar;
 }
-.brand { display: block; margin: 0; padding: 4px 12px 28px; }
-.brand img { display: block; width: 94px; height: auto; }
-.side-nav { display: grid; gap: 8px; }
-.side-nav a { display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 10px 14px; border-radius: 10px; color: rgba(255,255,255,.9); font-size: 14px; font-weight: 600; }
-.side-nav a:hover, .side-nav a.selected { color: #fff; background: rgba(255,255,255,.18); }
-.nav-symbol { display: inline-grid; width: 22px; place-items: center; font-size: 14px; }
-.sidebar-profile { display: flex; align-items: center; gap: 10px; margin-top: auto; padding: 8px 1px 2px; }
-.avatar { display: grid; width: 32px; height: 32px; flex: 0 0 32px; place-items: center; border-radius: 50%; color: #fff; background: #702131; font-size: 12px; font-weight: 700; }
-.sidebar-username { overflow: hidden; flex: 1; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
-.logout-link { color: #fff; font-size: 20px; }
+
+.brand { 
+    display: block; 
+    margin: 0; 
+    padding: 4px 12px 28px; 
+}
+
+.brand img { 
+    display: block; 
+    width: 94px; 
+    height: auto; 
+}
+
+.side-nav { 
+    display: grid; 
+    gap: 8px; 
+}
+
+.side-nav a { 
+    display: flex; 
+    align-items: center; 
+    gap: 12px; 
+    min-height: 40px; 
+    padding: 10px 14px; 
+    border-radius: 10px; 
+    color: rgba(255,255,255,.9); 
+    font-size: 14px; 
+    font-weight: 600; 
+    transition: background-color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+                color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+                transform 0.2s cubic-bezier(0.16, 1, 0.3, 1); 
+}
+
+.side-nav a .nav-symbol {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    transition: transform 0.2s ease;
+}
+
+/* Hover state */
+.side-nav a:hover {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.12);
+    transform: translateX(3px);
+}
+
+.side-nav a:hover .nav-symbol {
+    transform: scale(1.12);
+}
+
+/* Active selected tab state */
+.side-nav a.selected {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.22);
+}
+
+.nav-symbol { 
+    display: inline-grid; 
+    width: 22px; 
+    place-items: center; 
+    font-size: 14px; 
+}
+.sidebar-profile { 
+    display: flex; 
+    align-items: center; 
+    gap: 10px; 
+    margin-top: auto; 
+    padding: 8px 1px 2px; 
+}
+
+.avatar { 
+    display: grid; 
+    width: 32px; 
+    height: 32px; 
+    flex: 0 0 32px; 
+    place-items: center; 
+    border-radius: 50%; 
+    color: #fff; 
+    background: #702131; 
+    font-size: 12px; 
+    font-weight: 700; 
+}
+
+.sidebar-username { 
+    overflow: hidden; 
+    flex: 1; 
+    font-size: 14px; 
+    text-overflow: ellipsis; 
+    white-space: nowrap; 
+}
+
+.logout-link {
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 15px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.2s ease, transform 0.2s ease;
+}
+
+.logout-link:hover {
+    color: #ffffff;
+    transform: translateX(2px);
+}
+
+
 .dashboard-main { min-height: 100vh; margin-left: 218px; padding: 17px 40px 45px; }
 .round-card { display: flex; min-height: 103px; align-items: center; justify-content: space-between; gap: 24px; padding: 14px 20px 12px; border: 1px solid var(--border); border-radius: 11px; background: #fff; }
 .round-main { min-width: 0; flex: 1; }
@@ -70,7 +168,9 @@ a { color: inherit; text-decoration: none; }
 .slot-badge { padding: 3px 6px; border-radius: 5px; color: #8c4758; background: #f9e9ed; font-size: 7px; font-weight: 700; }
 .payment-state { max-width: 138px; overflow: hidden; padding: 4px 7px; border-radius: 99px; color: #976821; background: #fff0c7; font-size: 7px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .payment-state.verified { color: #237b49; background: #dcf5e5; }
-.payment-state.rejected { color: #912f45; background: #fbe5e9; }
+.payment-state.pending-operator { color: #2860a8; background: #dfebff; }
+.payment-state.unpaid { color: #596273; background: #eceef2; }
+.payment-review-trigger { justify-self: start; padding: 0; border: 0; color: #963044; background: transparent; font: inherit; font-size: 8px; font-weight: 700; text-decoration: underline; cursor: pointer; }
 .operator-bar { display: flex; min-height: 54px; align-items: center; justify-content: space-between; gap: 13px; margin-top: 12px; padding: 9px 15px; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
 .operator-identity { display: flex; min-width: 0; align-items: center; gap: 9px; }
 .operator-mark { display: grid; width: 28px; height: 28px; flex: 0 0 28px; place-items: center; border-radius: 8px; color: #a23d54; background: #fae8ed; font-size: 13px; }
@@ -80,7 +180,10 @@ a { color: inherit; text-decoration: none; }
 .operator-identity b { padding: 0 3px; color: #dbb8c0; font-weight: 400; }
 .text-verified { color: #318457; }
 .text-pending { color: #a07930; }
-.operator-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
+.operator-actions { display: flex; flex: 0 0 auto; align-items: flex-start; gap: 6px; }
+.payment-action { position: relative; display: grid; justify-items: end; gap: 4px; }
+.payment-submitted-message { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 5; display: none; width: max-content; max-width: min(220px, calc(100vw - 32px)); padding: 7px 9px; border: 1px solid #ead1d7; border-radius: 6px; color: #8b626c; background: #fff; box-shadow: 0 4px 12px rgba(49, 20, 29, .14); font-size: 8px; line-height: 1.35; text-align: center; white-space: normal; }
+.payment-action:hover .payment-submitted-message, .payment-action:focus-within .payment-submitted-message { display: block; }
 .action-form { display: inline-flex; margin: 0; }
 .operator-button { min-height: 27px; padding: 0 11px; border: 1px solid transparent; border-radius: 7px; font: inherit; font-size: 8px; font-weight: 700; white-space: nowrap; }
 .action-button { min-height: 27px; padding: 0 11px; border: 1px solid #e7a7b4; border-radius: 7px; color: #91374b; background: #fff; font: inherit; font-size: 8px; font-weight: 700; white-space: nowrap; cursor: pointer; }
@@ -105,6 +208,22 @@ a { color: inherit; text-decoration: none; }
 .payment-dialog-actions button { min-width: 47px; min-height: 28px; padding: 0 12px; border: 1px solid transparent; border-radius: 8px; color: #fff; background: var(--berry-dark); font: inherit; font-size: 9px; cursor: pointer; }
 .payment-dialog-actions .payment-confirm { min-width: 59px; background: #963044; }
 .payment-dialog-actions button:disabled { opacity: .55; cursor: not-allowed; }
+.payment-review-dialog { width: min(640px, calc(100vw - 30px)); padding: 30px 38px 28px; }
+.payment-review-dialog h2 { margin: 5px 0 8px; color: #241a1d; font-size: 24px; text-align: center; }
+.payment-review-intro { margin: 0 0 28px; color: #747b89; font-size: 15px; text-align: center; }
+.payment-review-intro strong { color: var(--berry); }
+.payment-review-panel { overflow: hidden; border: 1px solid #efaebb; border-radius: 12px; background: #fff; }
+.payment-review-panel h3 { margin: 0; padding: 13px 17px; border-bottom: 1px solid #efaebb; color: #8d263f; background: #fcf0f2; font-size: 12px; letter-spacing: .4px; }
+.payment-review-panel .dialog-details { padding: 0 18px; }
+.payment-review-panel .dialog-details > div { padding: 14px 0; font-size: 14px; }
+.payment-review-panel .dialog-details > div:last-child { border-bottom: 0; }
+.payment-review-panel .dialog-details dt { color: #747b89; }
+.payment-review-panel .dialog-details dd { color: #342326; }
+.payment-review-dialog .payment-dialog-actions { margin-top: 28px; }
+.payment-review-dialog .payment-dialog-actions button { min-height: 48px; padding: 0 26px; border-radius: 14px; font-size: 14px; }
+.payment-review-dialog .payment-dialog-actions .payment-review-reject { border: 1px solid #8d263f; color: #8d263f; background: #fff; }
+.payment-review-dialog .payment-dialog-actions .payment-confirm { min-width: 145px; background: #963044; }
+.payment-review-dialog .payment-dialog-actions .payment-review-reject:hover { background: #fff4f6; }
 .operator-button.pay-button { border-color: #963044; color: #fff; background: #963044; cursor: pointer; }
 .operator-button.pay-button:hover, .payment-dialog-actions .payment-confirm:hover { background: #7e263a; }
 .dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
@@ -165,10 +284,18 @@ a { color: inherit; text-decoration: none; }
     .member-card:last-child { border-bottom: 0; }
     .member-card { min-height: 69px; padding: 10px 12px; }
     .operator-actions { display: grid; grid-template-columns: repeat(2, 1fr); }
+    .operator-actions > .payment-action { min-width: 0; max-width: none; }
+    .payment-action .operator-button { width: 100%; }
     .operator-actions .action-form, .operator-actions .operator-button { width: 100%; }
     .action-form .action-button { width: 100%; }
     .operator-identity { max-width: 100%; }
     .payment-detail { max-width: 175px; }
+    .payment-review-dialog { padding: 24px 18px 20px; }
+    .payment-review-dialog h2 { font-size: 20px; }
+    .payment-review-intro { margin-bottom: 20px; font-size: 12px; }
+    .payment-review-panel .dialog-details { padding: 0 12px; }
+    .payment-review-panel .dialog-details > div { font-size: 11px; }
+    .payment-review-dialog .payment-dialog-actions button { min-height: 40px; padding: 0 17px; font-size: 12px; }
 }
 
 .eyebrow { display: block; color: #a14c60; font-size: 10px; font-weight: 800; letter-spacing: 1.2px; }

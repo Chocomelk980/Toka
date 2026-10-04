@@ -1,36 +1,31 @@
 (() => {
     'use strict';
 
-    // Deliberately separate from real accounts until admin authentication is connected.
+    // Only the group preview uses browser storage. Users and logs come from PHP/MySQL.
     const storageKey = 'toka.admin.preview.v1';
     const initialState = () => ({
         version: 1,
         groups: [
-            { id: 'Toka-771-234', name: "Tambayan Savings ’26", status: 'Frozen', votes: 5, members: 7, reason: 'Pot Disbursement Shortage/Delay', volume: 42000 },
-            { id: 'Toka-445-991', name: 'Sunrise Paluwagan', status: 'Frozen', votes: 3, members: 7, reason: 'Unverified Share', volume: 21000 },
-            { id: 'Toka-301-101', name: 'Barkada Savings', status: 'Active', volume: 24000 },
-            { id: 'Toka-301-102', name: 'Family Fund', status: 'Active', volume: 18000 },
-            { id: 'Toka-301-103', name: 'Weekend Savers', status: 'Active', volume: 12000 },
-            { id: 'Toka-301-104', name: 'Community Circle', status: 'Active', volume: 9000 },
-            { id: 'Toka-301-105', name: 'Office Savings', status: 'Active', volume: 7000 },
-            { id: 'Toka-201-101', name: 'Holiday Fund', status: 'Completed', volume: 30000 },
-            { id: 'Toka-201-102', name: 'School Savings', status: 'Completed', volume: 20000 }
-        ],
-        users: [
-            { id: 'USR-001', name: 'Han Ukangpera', groups: 4, trust: 100, banned: false },
-            { id: 'USR-002', name: 'Cardin Santos', groups: 2, trust: 100, banned: false },
-            { id: 'USR-003', name: 'James Cruz', groups: 1, trust: 85, banned: false },
-            { id: 'USR-004', name: 'Rosa Maliwanag', groups: 2, trust: 100, banned: false },
-            { id: 'USR-005', name: 'Lito Reyes', groups: 1, trust: 88, banned: true },
-            { id: 'USR-006', name: 'Alex Rivera', groups: 1, trust: 100, banned: false },
-            { id: 'USR-007', name: 'Josephine Tan', groups: 1, trust: 100, banned: false },
-            { id: 'USR-008', name: 'Luciel Pinil', groups: 3, trust: 100, banned: false }
+            { id: 'Toka-771-234', name: "Tambayan Savings ’26", status: 'Frozen', votes: 5, members: 7, reason: 'Pot Disbursement Shortage/Delay' },
+            { id: 'Toka-445-991', name: 'Sunrise Paluwagan', status: 'Frozen', votes: 3, members: 7, reason: 'Unverified Share' },
+            { id: 'Toka-301-101', name: 'Barkada Savings', status: 'Active' },
+            { id: 'Toka-301-102', name: 'Family Fund', status: 'Active' },
+            { id: 'Toka-301-103', name: 'Weekend Savers', status: 'Active' },
+            { id: 'Toka-301-104', name: 'Community Circle', status: 'Active' },
+            { id: 'Toka-301-105', name: 'Office Savings', status: 'Active' },
+            { id: 'Toka-201-101', name: 'Holiday Fund', status: 'Completed' },
+            { id: 'Toka-201-102', name: 'School Savings', status: 'Completed' }
         ]
     });
     let state = initialState();
     const byId = id => document.getElementById(id);
     const dialog = byId('admin-confirm');
     const search = byId('user-search');
+    const auditSearch = byId('audit-search');
+    const userRows = Array.from(byId('user-roster').children);
+    const auditRows = Array.from(byId('audit-rows').children);
+    const auditPageSize = 10;
+    let auditPage = 1;
     let pending = null;
     let trigger = null;
     let toastTimer;
@@ -45,22 +40,17 @@
         const saved = localStorage.getItem(storageKey);
         if (saved) {
             const parsed = JSON.parse(saved);
-            if (parsed.version !== 1 || !Array.isArray(parsed.groups) || !Array.isArray(parsed.users)) throw new Error('Invalid preview');
+            if (parsed.version !== 1 || !Array.isArray(parsed.groups)) throw new Error('Invalid preview');
             const restored = initialState();
             restored.groups.forEach(group => {
                 const record = parsed.groups.find(item => item && item.id === group.id);
                 if (!record || !['Active', 'Completed', 'Frozen', 'Dissolved'].includes(record.status)) throw new Error('Invalid group');
                 if (group.status === 'Frozen') group.status = record.status === 'Completed' ? 'Frozen' : record.status;
             });
-            restored.users.forEach(user => {
-                const record = parsed.users.find(item => item && item.id === user.id);
-                if (!record || typeof record.banned !== 'boolean') throw new Error('Invalid user');
-                user.banned = record.banned;
-            });
             state = restored;
         }
     } catch (error) {
-        storageNotice('Saved preview data could not be loaded. The original sample data is shown.');
+        storageNotice('Saved group preview data could not be loaded. The original sample groups are shown.');
     }
 
     function save() {
@@ -89,11 +79,6 @@
     }
 
     function renderOverview() {
-        byId('active-count').textContent = state.groups.filter(group => group.status === 'Active').length;
-        byId('completed-count').textContent = state.groups.filter(group => group.status === 'Completed').length;
-        byId('flagged-count').textContent = state.groups.filter(group => group.status === 'Frozen').length;
-        // Historical verified volume remains unchanged by moderation decisions.
-        byId('volume-total').textContent = new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP', maximumFractionDigits: 0 }).format(state.groups.reduce((sum, group) => sum + group.volume, 0));
         const rows = byId('dispute-rows');
         rows.replaceChildren();
         state.groups.filter(group => group.status === 'Frozen').forEach(group => {
@@ -115,27 +100,74 @@
     }
 
     function renderUsers() {
+        if (byId('user-roster').dataset.available !== 'true') return;
         const query = search.value.trim().toLocaleLowerCase();
-        const users = state.users.filter(user => `${user.name} ${user.id}`.toLocaleLowerCase().includes(query));
-        const roster = byId('user-roster');
-        roster.replaceChildren();
-        users.forEach(user => {
-            const row = element('li', `user-row${user.banned ? ' is-banned' : ''}`);
-            const initials = user.name.split(/\s+/).map(part => part[0]).slice(0, 2).join('');
-            const avatar = element('span', 'user-avatar', initials);
-            avatar.setAttribute('aria-hidden', 'true');
-            const description = element('div', 'user-description');
-            const name = element('div', 'user-name');
-            name.append(element('strong', '', user.name));
-            if (user.banned) name.append(element('span', 'status-pill', 'Banned'));
-            description.title = user.id;
-            description.append(name, element('span', 'sr-only', `User ID ${user.id}. `), element('span', 'user-meta', `${user.groups} ${user.groups === 1 ? 'group' : 'groups'} · Trust: ${user.trust}`));
-            row.append(avatar, description, actionButton(user.banned ? 'Unban' : 'Ban', user.banned ? 'unban' : 'ban', user.id, user.name, user.banned));
-            roster.append(row);
+        let visibleCount = 0;
+        userRows.forEach(row => {
+            row.hidden = !row.dataset.search.toLocaleLowerCase().includes(query);
+            if (!row.hidden) visibleCount++;
         });
-        byId('users-empty').hidden = users.length > 0;
-        const bannedCount = state.users.filter(user => user.banned).length;
-        byId('roster-count').textContent = `${users.length} of ${state.users.length} users · ${bannedCount} banned`;
+        byId('users-empty').hidden = visibleCount > 0;
+        const bannedCount = userRows.filter(row => row.dataset.status === 'Banned').length;
+        byId('roster-count').textContent = `${visibleCount} of ${userRows.length} users · ${bannedCount} banned`;
+    }
+
+    function renderAudit() {
+        if (byId('audit-rows').dataset.available !== 'true') return;
+        const query = auditSearch.value.trim().toLocaleLowerCase();
+        const matchingRows = auditRows.filter(row => row.dataset.search.toLocaleLowerCase().includes(query));
+        const pageCount = Math.ceil(matchingRows.length / auditPageSize);
+        auditPage = Math.max(1, Math.min(auditPage, pageCount || 1));
+        const startIndex = (auditPage - 1) * auditPageSize;
+        const endIndex = Math.min(startIndex + auditPageSize, matchingRows.length);
+        auditRows.forEach(row => { row.hidden = true; });
+        matchingRows.slice(startIndex, endIndex).forEach(row => { row.hidden = false; });
+
+        const pagination = byId('audit-pagination');
+        pagination.hidden = pageCount <= 1;
+        byId('audit-page-status').textContent = `Showing ${matchingRows.length ? startIndex + 1 : 0}–${endIndex} of ${matchingRows.length} logs · Page ${auditPage} of ${pageCount || 1}`;
+        byId('audit-prev').disabled = auditPage <= 1;
+        byId('audit-next').disabled = auditPage >= pageCount;
+
+        const pageNumbers = byId('audit-page-numbers');
+        pageNumbers.replaceChildren();
+        let pages;
+        if (pageCount <= 7) {
+            pages = Array.from({ length: pageCount }, (_, index) => index + 1);
+        } else {
+            const included = new Set([1, pageCount]);
+            for (let page = Math.max(2, auditPage - 1); page <= Math.min(pageCount - 1, auditPage + 1); page++) included.add(page);
+            pages = Array.from(included).sort((left, right) => left - right);
+        }
+        let previousPage = 0;
+        pages.forEach(page => {
+            if (page - previousPage > 1) pageNumbers.append(element('span', 'audit-page-ellipsis', '…'));
+            const button = element('button', 'audit-page-number', String(page));
+            button.type = 'button';
+            button.dataset.page = String(page);
+            button.setAttribute('aria-label', `Page ${page}`);
+            if (page === auditPage) {
+                button.setAttribute('aria-current', 'page');
+            }
+            pageNumbers.append(button);
+            previousPage = page;
+        });
+        byId('audit-empty').hidden = matchingRows.length > 0;
+        byId('audit-count').textContent = matchingRows.length
+            ? `Showing audit records ${startIndex + 1}–${endIndex} of ${matchingRows.length}.`
+            : 'No matching audit records.';
+    }
+
+    function changeAuditPage(page, focusControl) {
+        auditPage = page;
+        renderAudit();
+        if (focusControl === 'number') {
+            const currentButton = Array.from(byId('audit-page-numbers').querySelectorAll('button[data-page]'))
+                .find(button => Number(button.dataset.page) === auditPage);
+            currentButton?.focus();
+        } else {
+            byId(focusControl).focus();
+        }
     }
 
     function announce(message) {
@@ -145,17 +177,18 @@
     }
 
     function confirmAction(action, id, button) {
-        const user = state.users.find(item => item.id === id);
+        if (button.disabled) return;
         const group = state.groups.find(item => item.id === id);
+        const userRow = userRows.find(row => row.dataset.userId === id);
         const messages = {
-            ban: user && ['Ban user?', `Mark ${user.name} as banned in this preview? You can unban them at any time.`, 'Ban user'],
-            unban: user && ['Unban user?', `Restore ${user.name} to active status in this preview?`, 'Unban user'],
+            ban: userRow && [`Ban ${userRow.dataset.name}?`, 'Are you sure you want to ban this user?', 'Ban user'],
+            unban: userRow && [`Unban ${userRow.dataset.name}?`, 'Are you sure you want to unban this user? They will be able to log in again.', 'Unban user'],
             unfreeze: group && ['Force-unfreeze group?', `Return ${group.name} to Active and remove it from the intervention desk in this preview?`, 'Force-unfreeze'],
             dissolve: group && ['Force-dissolve group?', `Mark ${group.name} as Dissolved and remove it from the intervention desk in this preview? Its history is retained. Use Reset preview to restore the sample group.`, 'Force-dissolve'],
-            reset: ['Reset preview?', 'Restore all sample groups and users? This clears your saved preview decisions in this browser.', 'Reset preview']
+            reset: ['Reset group preview?', 'Restore all sample groups? This clears your saved group preview decisions in this browser.', 'Reset group preview']
         };
         if (!messages[action]) return;
-        pending = { action, id };
+        pending = { action, id, status: userRow?.dataset.status };
         trigger = button;
         [byId('confirm-title').textContent, byId('confirm-description').textContent, byId('confirm-action').textContent] = messages[action];
         dialog.showModal();
@@ -172,15 +205,19 @@
         event.preventDefault();
         if (!pending) return;
         const { action, id } = pending;
+        if (action === 'ban' || action === 'unban') {
+            byId('moderation-action').value = action;
+            byId('moderation-user').value = id;
+            byId('moderation-status').value = pending.status;
+            byId('confirm-action').disabled = true;
+            byId('moderation-form').submit();
+            return;
+        }
         let message = '';
         if (action === 'reset') {
             state = initialState();
             search.value = '';
-            message = 'Preview reset. All sample groups and users have been restored.';
-        } else if (action === 'ban' || action === 'unban') {
-            const user = state.users.find(item => item.id === id);
-            user.banned = action === 'ban';
-            message = `${user.name} has been ${user.banned ? 'banned' : 'unbanned'} in the preview.`;
+            message = 'Group preview reset. All sample groups have been restored.';
         } else {
             const group = state.groups.find(item => item.id === id);
             if (group.status !== 'Frozen') { dialog.close(); return; }
@@ -199,7 +236,18 @@
         announce(message);
     });
     search.addEventListener('input', renderUsers);
+    auditSearch.addEventListener('input', () => { auditPage = 1; renderAudit(); });
+    byId('audit-prev').addEventListener('click', () => changeAuditPage(auditPage - 1, 'audit-prev'));
+    byId('audit-next').addEventListener('click', () => changeAuditPage(auditPage + 1, 'audit-next'));
+    byId('audit-page-numbers').addEventListener('click', event => {
+        const button = event.target.closest('button[data-page]');
+        if (button) changeAuditPage(Number(button.dataset.page), 'number');
+    });
     byId('clear-search').addEventListener('click', () => { search.value = ''; renderUsers(); search.focus(); });
     renderOverview();
     renderUsers();
+    renderAudit();
+    if (byId('admin-feedback').textContent.trim()) announce(byId('admin-feedback').textContent);
+    // A back/forward navigation may restore the page with its submit button disabled.
+    window.addEventListener('pageshow', () => { byId('confirm-action').disabled = false; });
 })();
