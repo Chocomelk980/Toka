@@ -94,9 +94,10 @@ function tokaIsAdmin(array $user): bool
     return !empty($user['is_admin']);
 }
 
-function tokaHome(array $user): string
+function tokaHome(array $user, bool $fromProjectRoot = false): string
 {
-    return tokaIsAdmin($user) ? '../DASHBOARD/admin.php' : '../DASHBOARD/my_groups.php';
+    $dashboardPath = $fromProjectRoot ? 'DASHBOARD/' : '../DASHBOARD/';
+    return $dashboardPath . (tokaIsAdmin($user) ? 'admin.php' : 'my_groups.php');
 }
 
 function tokaCurrentUser(): ?array

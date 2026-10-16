@@ -6,7 +6,7 @@ require_once __DIR__ . '/access.php';
 $action = $_POST['action'] ?? '';
 $signedInUser = tokaCurrentUser();
 $activeTabToken = $signedInUser ? tokaValidTabAuthToken() : null;
-if ($signedInUser && $action !== 'login') {
+if ($signedInUser && $action !== 'login' && ($action !== 'register' || $activeTabToken !== null)) {
     if ($activeTabToken !== null) {
         header('Location: ' . tokaAppendTabAuthToUrl(tokaHome($signedInUser), $activeTabToken), true, 303);
     } else {

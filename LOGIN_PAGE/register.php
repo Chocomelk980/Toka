@@ -3,13 +3,9 @@ session_start();
 require_once __DIR__ . '/access.php';
 
 $signedInUser = tokaCurrentUser();
-if ($signedInUser) {
-    $tabToken = tokaValidTabAuthToken();
-    if ($tabToken !== null) {
-        header('Location: ' . tokaAppendTabAuthToUrl(tokaHome($signedInUser), $tabToken), true, 303);
-    } else {
-        header('Location: index.php?tab_auth_required=1', true, 303);
-    }
+$tabToken = $signedInUser ? tokaValidTabAuthToken() : null;
+if ($signedInUser && $tabToken !== null) {
+    header('Location: ' . tokaAppendTabAuthToUrl(tokaHome($signedInUser), $tabToken), true, 303);
     exit;
 }
 
