@@ -1,7 +1,11 @@
 <?php
 session_start();
+require_once __DIR__ . '/../LOGIN_PAGE/access.php';
+tokaRequireRole();
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'LOGIN_PAGE' . DIRECTORY_SEPARATOR . 'dbconnect.php';
+require_once __DIR__ . '/cycle_helpers.php';
+require_once __DIR__ . '/group_limits.php';
 
 if (!isset($_SESSION['user'])) {
     header('Location: ../LOGIN_PAGE/index.php');
@@ -12,6 +16,7 @@ $username = $_SESSION['user']['username'] ?? 'User';
 $groups = [];
 $coopCandidatesByGroup = [];
 $loadError = '';
+$pdo = null;
 $success = $_SESSION['group_success'] ?? '';
 unset($_SESSION['group_success']);
 
@@ -22,7 +27,9 @@ if ($joinToken === '') {
     $joinToken = bin2hex(random_bytes(32));
     $_SESSION['join_request_csrf'] = $joinToken;
 }
-$joinModal = null;
+$joinModal = isset($_SESSION['group_limit_error'])
+    ? ['type' => 'error', 'message' => $_SESSION['group_limit_error']] : null;
+unset($_SESSION['group_limit_error']);
 
 function getJoinGroupByCode(PDO $pdo, string $code): array|false
 {
@@ -59,18 +66,6 @@ function firstOpenJoinSlot(PDO $pdo, int $groupId, int $totalSlots): int
         if (!isset($occupied[$slot])) return $slot;
     }
     return 0;
-}
-
-function groupCycleRoundDeadline(DateTimeImmutable $firstDue, string $frequency, int $roundOffset): DateTimeImmutable
-{
-    if ($frequency === 'Weekly') {
-        return $firstDue->modify('+' . $roundOffset . ' weeks');
-    }
-
-    $month = $firstDue->modify('first day of this month')->modify('+' . $roundOffset . ' months');
-    $day = min((int) $firstDue->format('j'), (int) $month->format('t'));
-    return $month->setDate((int) $month->format('Y'), (int) $month->format('n'), $day)
-        ->setTime((int) $firstDue->format('H'), (int) $firstDue->format('i'), (int) $firstDue->format('s'));
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $userId > 0) {
@@ -138,28 +133,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $userId > 0) {
                             $joinModal = ['type' => 'error', 'message' => 'This group could not be started. Refresh the page and try again.'];
                         } else {
                             $stmt = $pdo->prepare(
-                                'SELECT member_id FROM group_members WHERE group_id = :group_id ORDER BY assigned_slot_number'
+                                'SELECT member_id, role FROM group_members WHERE group_id = :group_id ORDER BY assigned_slot_number'
                             );
                             $stmt->execute([':group_id' => $startGroupId]);
-                            $cycleMembers = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                            $cycleMembers = $stmt->fetchAll();
                             if (count($cycleMembers) !== (int) $lockedGroup['total_member_slots']) {
                                 $pdo->rollBack();
                                 $joinModal = ['type' => 'error', 'message' => 'The group membership changed before it could start. Refresh the page and try again.'];
                             } else {
-                                $insertRound = $pdo->prepare(
-                                    'INSERT INTO round_schedules (group_id, round_number, receiver_member_id, target_deadline, round_status)
-                                     VALUES (:group_id, :round_number, :receiver_member_id, :target_deadline, :round_status)'
-                                );
                                 $firstDue = new DateTimeImmutable($lockedGroup['first_payment_due']);
-                                foreach ($cycleMembers as $roundIndex => $memberId) {
-                                    $insertRound->execute([
-                                        ':group_id' => $startGroupId,
-                                        ':round_number' => $roundIndex + 1,
-                                        ':receiver_member_id' => (int) $memberId,
-                                        ':target_deadline' => groupCycleRoundDeadline($firstDue, $lockedGroup['payment_frequency'], $roundIndex)->format('Y-m-d H:i:s'),
-                                        ':round_status' => $roundIndex === 0 ? 'Ongoing' : 'Upcoming',
-                                    ]);
-                                }
+                                tokaCreateCycleRounds($pdo, $startGroupId, $cycleMembers, $firstDue, $lockedGroup['payment_frequency']);
                             }
 
                             if ($pdo->inTransaction()) {
@@ -187,9 +170,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $userId > 0) {
                     $joinModal = ['type' => 'error', 'message' => 'Choose a group member to become Co-operator.'];
                 } else {
                     $pdo->beginTransaction();
-                    $stmt = $pdo->prepare('SELECT group_status FROM paluwagan_groups WHERE group_id = :group_id FOR UPDATE');
+                    $stmt = $pdo->prepare(
+                        'SELECT group_status, total_member_slots
+                         FROM paluwagan_groups WHERE group_id = :group_id FOR UPDATE'
+                    );
                     $stmt->execute([':group_id' => $targetGroupId]);
                     $lockedGroup = $stmt->fetch();
+
+                    $lockedMemberCount = 0;
+                    if ($lockedGroup) {
+                        $stmt = $pdo->prepare('SELECT COUNT(*) FROM group_members WHERE group_id = :group_id');
+                        $stmt->execute([':group_id' => $targetGroupId]);
+                        $lockedMemberCount = (int) $stmt->fetchColumn();
+                    }
 
                     $stmt = $pdo->prepare(
                         'SELECT member_id FROM group_members
@@ -224,6 +217,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $userId > 0) {
                     } elseif ($lockedGroup['group_status'] !== 'Waiting' || $roundCount > 0) {
                         $pdo->rollBack();
                         $joinModal = ['type' => 'error', 'message' => 'A Co-operator cannot be selected after the group cycle has started.'];
+                    } elseif ($lockedMemberCount < (int) $lockedGroup['total_member_slots']) {
+                        $pdo->rollBack();
+                        $joinModal = ['type' => 'error', 'message' => 'Fill every group slot before selecting a Co-operator.'];
                     } elseif ($existingCoOperator) {
                         $pdo->rollBack();
                         $joinModal = ['type' => 'error', 'message' => 'This group already has a Co-operator.'];
@@ -284,6 +280,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $userId > 0) {
                             $_SESSION['join_preview_group_id'] = (int) $joinGroup['group_id'];
                         } elseif ((int) $joinGroup['member_count'] >= (int) $joinGroup['total_member_slots']) {
                             $joinModal = ['type' => 'error', 'message' => 'This group is full and has no open member slots.'];
+                        } elseif (($limitError = tokaGroupLimitError($pdo, $userId)) !== null) {
+                            $joinModal = ['type' => 'error', 'message' => $limitError];
                         } else {
                             $joinGroup['next_open_slot'] = firstOpenJoinSlot($pdo, (int) $joinGroup['group_id'], (int) $joinGroup['total_member_slots']);
                             $joinModal = ['type' => 'preview', 'group' => $joinGroup];
@@ -304,6 +302,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $userId > 0) {
                     );
                     $stmt->execute([':group_id' => $previewGroupId]);
                     $joinGroup = $stmt->fetch();
+                    tokaLockGroupLimitUser($pdo, $userId);
+                    $limitError = tokaGroupLimitError($pdo, $userId);
                     if (!$joinGroup || !in_array($joinGroup['group_status'], ['Waiting', 'Active'], true)) {
                         $pdo->rollBack();
                         unset($_SESSION['join_preview_group_id']);
@@ -333,6 +333,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $userId > 0) {
                         } elseif ($memberCount >= (int) $joinGroup['total_member_slots']) {
                             $pdo->rollBack();
                             $joinModal = ['type' => 'error', 'message' => 'This group is full and has no open member slots.'];
+                        } elseif ($limitError !== null) {
+                            $pdo->rollBack();
+                            $joinModal = ['type' => 'error', 'message' => $limitError];
                         } else {
                             $stmt = $pdo->prepare(
                                 'INSERT INTO join_requests (group_id, user_id, request_status, requested_at)
@@ -394,6 +397,7 @@ if ($userId > 0) {
             if ($group['viewer_role'] === 'Main Operator'
                 && empty($group['co_op'])
                 && $group['group_status'] === 'Waiting'
+                && (int) $group['members'] >= (int) $group['capacity']
                 && (int) $group['cycle_rounds'] === 0) {
                 $selectableGroupIds[] = (int) $group['group_id'];
             }
@@ -425,11 +429,12 @@ if ($userId > 0) {
         $groups = [];
         $loadError = 'We could not load your groups. Please refresh the page to try again.';
     }
+
 }
 
-$selectedTab = $_GET['tab'] ?? 'Waiting';
+$selectedTab = $_GET['tab'] ?? 'Active';
 if (!in_array($selectedTab, ['Active', 'Waiting', 'Completed'], true)) {
-    $selectedTab = 'Waiting';
+    $selectedTab = 'Active';
 }
 
 foreach ($groups as &$group) {
@@ -477,6 +482,9 @@ foreach ($groups as $group) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Toka - My Groups</title>
     <link rel="stylesheet" href="dashboard.css?v=<?= filemtime(__DIR__ . '/dashboard.css') ?>">
+    <link rel="stylesheet" href="../assets/typography.css?v=<?= filemtime(__DIR__ . '/../assets/typography.css') ?>">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="icon" type="image/svg+xml" href="../assets/toka_icon.svg">
 </head>
 <body>
     <div class="app">
@@ -488,17 +496,13 @@ foreach ($groups as $group) {
 
                 <nav class="nav">
                     <a href="my_groups.php" class="nav-item active">
-                        <span class="nav-icon">👥</span>
+                        <span class="nav-icon"><i class="fa-solid fa-users"></i></span>
                         <span>My Groups</span>
                     </a>
 
                     <a href="#" class="nav-item" style="color: #c7c7c7;">
-                        <span class="nav-icon">⌂</span>
+                        <span class="nav-icon"><i class="fa-solid fa-border-all"></i></span>
                         <span>Dashboard</span>
-                    </a>
-                    <a href="admin.php" class="nav-item">
-                        <span class="nav-icon" aria-hidden="true">&#9671;</span>
-                        <span>Admin</span>
                     </a>
                 </nav>
             </div>
@@ -511,7 +515,9 @@ foreach ($groups as $group) {
                     <span><?= htmlspecialchars($username) ?></span>
                 </div>
 
-                <a href="../LOGIN_PAGE/logout.php" class="logout">↪</a>
+                <a href="../LOGIN_PAGE/logout.php" class="logout" aria-label="Log out" title="Log out">
+                    <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
+                </a>
             </div>
         </aside>
 
@@ -533,7 +539,7 @@ foreach ($groups as $group) {
                 <form class="join-box" method="post" action="my_groups.php">
                     <input type="hidden" name="join_form_token" value="<?= htmlspecialchars($joinToken) ?>">
                     <input type="hidden" name="join_action" value="preview">
-                    <input type="text" name="group_code" placeholder="Enter group code to join   (e.g. Toka39)" maxlength="20" required>
+                    <input type="text" name="group_code" placeholder="Enter group code to join   (e.g. TokaXXXX)" autocomplete="off" maxlength="20" required>
                     <button type="submit">Join</button>
                 </form>
             </section>
@@ -590,10 +596,10 @@ foreach ($groups as $group) {
                                 </div>
 
                                 <div class="group-details">
-                                    <span>♛ Main Op: <?= htmlspecialchars($group['main_op']) ?></span>
-                                    <span>🛡 Co-Op: <?= htmlspecialchars($group['co_op']) ?></span>
-                                    <span>₱ <?= htmlspecialchars($group['amount']) ?></span>
-                                    <span>◷ <?= htmlspecialchars($group['schedule']) ?></span>
+                                    <span><i class="fa-solid fa-crown"></i> Main Op: <?= htmlspecialchars($group['main_op']) ?></span>
+                                    <span><i class="fa-solid fa-user-shield"></i> Co-Op: <?= htmlspecialchars($group['co_op']) ?></span>
+                                    <span><i class="fa-solid fa-peso-sign"></i> <?= htmlspecialchars($group['amount']) ?></span>
+                                    <span><i class="fa-regular fa-clock"></i> <?= htmlspecialchars($group['schedule']) ?></span>
                                 </div>
                             </div>
 
@@ -629,32 +635,36 @@ foreach ($groups as $group) {
                                 && !$group['has_co_op']
                                 && $group['group_status'] === 'Waiting'
                                 && (int) $group['cycle_rounds'] === 0): ?>
-                                <?php $coopDialogId = 'select-coop-' . (int) $group['group_id']; ?>
-                                <button type="button" class="coop-select-button" data-open-coop="<?= htmlspecialchars($coopDialogId) ?>">Select Co-op</button>
-                                <dialog class="coop-dialog" id="<?= htmlspecialchars($coopDialogId) ?>">
-                                    <h2>Ready to select<br>Co-operator?</h2>
-                                    <form method="post" action="my_groups.php">
-                                        <input type="hidden" name="join_form_token" value="<?= htmlspecialchars($joinToken) ?>">
-                                        <input type="hidden" name="join_action" value="assign_coop">
-                                        <input type="hidden" name="group_id" value="<?= (int) $group['group_id'] ?>">
-                                        <label for="coop-member-<?= (int) $group['group_id'] ?>">Choose from Members</label>
-                                        <select id="coop-member-<?= (int) $group['group_id'] ?>" name="coop_user_id" required <?= empty($coopCandidatesByGroup[(int) $group['group_id']]) ? 'disabled' : '' ?>>
-                                            <?php if (empty($coopCandidatesByGroup[(int) $group['group_id']])): ?>
-                                                <option value="" selected>No members available</option>
-                                            <?php else: ?>
-                                                <option value="" selected disabled>Choose a member</option>
-                                                <?php foreach ($coopCandidatesByGroup[(int) $group['group_id']] as $candidate): ?>
-                                                    <option value="<?= (int) $candidate['user_id'] ?>"><?= htmlspecialchars($candidate['username']) ?></option>
-                                                <?php endforeach; ?>
-                                            <?php endif; ?>
-                                        </select>
-                                        <p class="coop-note">NOTE: You cannot change your Co-operator once the cycle starts.</p>
-                                        <div class="coop-modal-actions">
-                                            <button type="button" class="coop-back-button" data-close-coop>Back</button>
-                                            <button type="submit" class="coop-confirm-button" <?= empty($coopCandidatesByGroup[(int) $group['group_id']]) ? 'disabled' : '' ?>>Confirm</button>
-                                        </div>
-                                    </form>
-                                </dialog>
+                                <?php if ((int) $group['members'] < (int) $group['capacity']): ?>
+                                    <button type="button" class="coop-select-button coop-waiting-button" disabled title="Available when every group slot is filled">Waiting</button>
+                                <?php else: ?>
+                                    <?php $coopDialogId = 'select-coop-' . (int) $group['group_id']; ?>
+                                    <button type="button" class="coop-select-button" data-open-coop="<?= htmlspecialchars($coopDialogId) ?>">Select Co-op</button>
+                                    <dialog class="coop-dialog" id="<?= htmlspecialchars($coopDialogId) ?>">
+                                        <h2>Ready to select<br>Co-operator?</h2>
+                                        <form method="post" action="my_groups.php">
+                                            <input type="hidden" name="join_form_token" value="<?= htmlspecialchars($joinToken) ?>">
+                                            <input type="hidden" name="join_action" value="assign_coop">
+                                            <input type="hidden" name="group_id" value="<?= (int) $group['group_id'] ?>">
+                                            <label for="coop-member-<?= (int) $group['group_id'] ?>">Choose from Members</label>
+                                            <select id="coop-member-<?= (int) $group['group_id'] ?>" name="coop_user_id" required <?= empty($coopCandidatesByGroup[(int) $group['group_id']]) ? 'disabled' : '' ?>>
+                                                <?php if (empty($coopCandidatesByGroup[(int) $group['group_id']])): ?>
+                                                    <option value="" selected>No members available</option>
+                                                <?php else: ?>
+                                                    <option value="" selected disabled>Choose a member</option>
+                                                    <?php foreach ($coopCandidatesByGroup[(int) $group['group_id']] as $candidate): ?>
+                                                        <option value="<?= (int) $candidate['user_id'] ?>"><?= htmlspecialchars($candidate['username']) ?></option>
+                                                    <?php endforeach; ?>
+                                                <?php endif; ?>
+                                            </select>
+                                            <p class="coop-note">NOTE: You cannot change your Co-operator once the cycle starts.</p>
+                                            <div class="coop-modal-actions">
+                                                <button type="button" class="coop-back-button" data-close-coop>Back</button>
+                                                <button type="submit" class="coop-confirm-button" <?= empty($coopCandidatesByGroup[(int) $group['group_id']]) ? 'disabled' : '' ?>>Confirm</button>
+                                            </div>
+                                        </form>
+                                    </dialog>
+                                <?php endif; ?>
                             <?php endif; ?>
                         </div>
                     </article>
@@ -678,13 +688,13 @@ foreach ($groups as $group) {
                         <section class="join-preview-card">
                             <h3><?= htmlspecialchars($joinGroup['group_name']) ?></h3>
                             <div class="join-preview-details">
-                                <span>♛ &nbsp; Main Op: <?= htmlspecialchars($joinGroup['main_op'] ?: 'Pending') ?></span>
-                                <span>⬟ &nbsp; Co-Op: <?= htmlspecialchars($joinGroup['co_op'] ?: 'Pending') ?></span>
-                                <span>₱ &nbsp; <?= htmlspecialchars(number_format((float) $joinGroup['contribution_amount'], 2)) ?></span>
-                                <span>◷ &nbsp; <?= htmlspecialchars($joinGroup['payment_frequency']) ?></span>
-                                <span>▣ &nbsp; Slots: <?= (int) $joinGroup['member_count'] ?>/<?= (int) $joinGroup['total_member_slots'] ?></span>
+                                <span><i class="fa-solid fa-crown"></i> Main Op: <?= htmlspecialchars($joinGroup['main_op'] ?: 'Pending') ?></span>
+                                <span><i class="fa-solid fa-user-shield"></i> Co-Op: <?= htmlspecialchars($joinGroup['co_op'] ?: 'Pending') ?></span>
+                                <span><i class="fa-solid fa-peso-sign"></i> <?= htmlspecialchars(number_format((float) $joinGroup['contribution_amount'], 2)) ?></span>
+                                <span><i class="fa-regular fa-clock"></i> <?= htmlspecialchars($joinGroup['payment_frequency']) ?></span>
+                                <span><i class="fa-solid fa-users"></i> Slots: <?= (int) $joinGroup['member_count'] ?>/<?= (int) $joinGroup['total_member_slots'] ?></span>
                                 <?php if ($joinModal['type'] === 'preview'): ?>
-                                    <span>♟ &nbsp; Slot Assigned: <?= (int) $joinGroup['next_open_slot'] ?>/<?= (int) $joinGroup['total_member_slots'] ?></span>
+                                    <span><i class="fa-solid fa-user-check"></i> Slot Assigned: <?= (int) $joinGroup['next_open_slot'] ?>/<?= (int) $joinGroup['total_member_slots'] ?></span>
                                 <?php endif; ?>
                             </div>
                         </section>
@@ -760,24 +770,40 @@ foreach ($groups as $group) {
 
         tabs.forEach(tab => {
             tab.addEventListener("click", function () {
-                tabs.forEach(item => {
-                    item.classList.remove("active");
-                });
+                if (this.classList.contains("active")) return;
 
+                // Switch active tab indicator
+                tabs.forEach(item => item.classList.remove("active"));
                 this.classList.add("active");
 
                 const selectedStatus = this.dataset.status;
 
+                // Animate matching cards into view
                 cards.forEach(card => {
                     if (card.dataset.status === selectedStatus) {
                         card.style.display = "grid";
+                        card.classList.remove("animate-in");
+                        void card.offsetWidth; // Force CSS reflow to restart keyframe
+                        card.classList.add("animate-in");
                     } else {
                         card.style.display = "none";
+                        card.classList.remove("animate-in");
                     }
                 });
             });
         });
+
+        const joinInput = document.querySelector('.join-box input[name="group_code"]');
+        const joinBtn = document.querySelector('.join-box button');
+
+        if (joinInput && joinBtn) {
+            joinInput.addEventListener('input', () => {
+                const hasText = joinInput.value.trim().length > 0;
+                joinBtn.classList.toggle('active', hasText);
+            });
+        }
     </script>
+<script src="../LOGIN_PAGE/tab-auth.js?v=<?= filemtime(__DIR__ . '/../LOGIN_PAGE/tab-auth.js') ?>"></script>
 </body>
 </html>
 

@@ -1,12 +1,14 @@
 <?php
 session_start();
+require_once __DIR__ . '/access.php';
 
-if (!isset($_SESSION['user'])) {
+$signedInUser = tokaCurrentUser();
+if (!$signedInUser) {
     header('Location: index.php');
     exit;
 }
 
-header('Location: ../DASHBOARD/my_groups.php');
+header('Location: ' . tokaHome($signedInUser), true, 303);
 exit;
 
 $user = $_SESSION['user'];
@@ -20,6 +22,7 @@ unset($_SESSION['auth_success']);
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Toka - Welcome</title>
     <link rel="stylesheet" href="auth.css">
+    <link rel="stylesheet" href="../assets/typography.css?v=<?= filemtime(__DIR__ . '/../assets/typography.css') ?>">
 </head>
 <body>
     <main class="auth-card">

@@ -1,12 +1,50 @@
 <?php
 session_start();
+require_once __DIR__ . '/../LOGIN_PAGE/access.php';
+tokaRequireRole();
+require_once __DIR__ . '/group_limits.php';
+require_once __DIR__ . '/cycle_helpers.php';
 
 if (!isset($_SESSION['user'])) {
     header('Location: ../LOGIN_PAGE/index.php');
     exit;
 }
 
+try {
+    $limitError = tokaGroupLimitError(getDbConnection(), (int) $_SESSION['user']['user_id']);
+} catch (PDOException $e) {
+    error_log('Group limit check failed: ' . $e->getMessage());
+    $limitError = 'We could not check your group limit right now. Please try again.';
+}
+if ($limitError !== null) {
+    $_SESSION['group_limit_error'] = $limitError;
+    header('Location: my_groups.php', true, 303);
+    exit;
+}
+
 $draft = $_SESSION['draft_group'] ?? [];
+
+function createGroupCalculatedPot(string $contribution, string $slots): string
+{
+    if (!preg_match('/^\d{1,8}(?:\.\d{1,2})?$/D', $contribution)
+        || !preg_match('/^[1-9]\d{0,9}$/D', $slots)) return '';
+
+    $memberSlots = (int) $slots;
+    if ($memberSlots > 12) return '';
+
+    [$whole, $fraction] = array_pad(explode('.', $contribution, 2), 2, '');
+    $contributionCents = (int) $whole * 100 + (int) str_pad($fraction, 2, '0');
+    if ($contributionCents < 1 || $contributionCents > intdiv(9999999999, $memberSlots)) return '';
+
+    $totalCents = $contributionCents * $memberSlots;
+    return intdiv($totalCents, 100) . '.' . str_pad((string) ($totalCents % 100), 2, '0', STR_PAD_LEFT);
+}
+
+// Never display a total restored from a submitted form or an old draft.
+$draft['calculated_total_pot'] = createGroupCalculatedPot(
+    (string) ($draft['contribution_amount'] ?? ''),
+    (string) ($draft['total_member_slots'] ?? '')
+);
 
 $errors = $_SESSION['group_errors'] ?? [];
 unset($_SESSION['group_errors']);
@@ -18,9 +56,10 @@ if (!isset($_SESSION['group_form_token'])) {
     $_SESSION['group_form_token'] = bin2hex(random_bytes(32));
 }
 
-$channelTypes = $draft['channel_type'] ?? ['GCash', 'Maya'];
+$channelTypes = $draft['channel_type'] ?? ['', ''];
 $channelNames = $draft['channel_name'] ?? ['', ''];
 $channelNumbers = $draft['channel_number'] ?? ['', ''];
+$paymentFrequencyOptions = tokaCycleFrequencyOptions();
 
 $username = $_SESSION['user']['username'] ?? 'User';
 ?>
@@ -31,6 +70,9 @@ $username = $_SESSION['user']['username'] ?? 'User';
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Toka - Create New Group</title>
     <link rel="stylesheet" href="dashboard.css?v=<?= filemtime(__DIR__ . '/dashboard.css') ?>">
+    <link rel="stylesheet" href="../assets/typography.css?v=<?= filemtime(__DIR__ . '/../assets/typography.css') ?>">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="icon" type="image/svg+xml" href="../assets/toka_icon.svg">
 </head>
 <body>
     <div class="app">
@@ -41,13 +83,13 @@ $username = $_SESSION['user']['username'] ?? 'User';
                 </div>
 
                 <nav class="nav">
-                    <a href="my_groups.php" class="nav-item">
-                        <span class="nav-icon">👥</span>
+                    <a href="my_groups.php" class="nav-item active">
+                        <span class="nav-icon"><i class="fa-solid fa-users" aria-hidden="true"></i></span>
                         <span>My Groups</span>
                     </a>
 
-                    <a href="#" class="nav-item">
-                        <span class="nav-icon">⌂</span>
+                    <a href="#" class="nav-item" style="color: #c7c7c7;">
+                        <span class="nav-icon"><i class="fa-solid fa-border-all" aria-hidden="true"></i></span>
                         <span>Dashboard</span>
                     </a>
                 </nav>
@@ -59,7 +101,7 @@ $username = $_SESSION['user']['username'] ?? 'User';
                     <span><?= htmlspecialchars($username) ?></span>
                 </div>
 
-                <a href="../LOGIN_PAGE/logout.php" class="logout">↪</a>
+                <a href="../LOGIN_PAGE/logout.php" class="logout" aria-label="Log out" title="Log out"><i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i></a>
             </div>
         </aside>
 
@@ -86,12 +128,12 @@ $username = $_SESSION['user']['username'] ?? 'User';
 
                             <div class="field-group">
                                 <label for="group_name">Group Name</label>
-                                <input id="group_name" name="group_name" type="text" required maxlength="100" value="<?= htmlspecialchars($draft['group_name'] ?? '') ?>">
+                                <input id="group_name" name="group_name" type="text" autocomplete="off" required maxlength="100" value="<?= htmlspecialchars($draft['group_name'] ?? '') ?>">
                             </div>
 
                             <div class="field-group">
                                 <label for="description">Description / House Rules</label>
-                                <textarea id="description" name="description" rows="5"><?= htmlspecialchars($draft['description'] ?? '') ?></textarea>
+                                <textarea id="description" name="description" autocomplete="off" rows="5"><?= htmlspecialchars($draft['description'] ?? '') ?></textarea>
                             </div>
                         </div>
 
@@ -116,12 +158,17 @@ $username = $_SESSION['user']['username'] ?? 'User';
 
                                 <div class="field-group">
                                     <label for="calculated_total_pot">Calculated Total Pot</label>
-                                    <input id="calculated_total_pot" name="calculated_total_pot" type="number" required min="0.01" max="99999999.99" step="0.01" value="<?= htmlspecialchars($draft['calculated_total_pot'] ?? '') ?>">
+                                    <input id="calculated_total_pot" type="number" required min="0.01" max="99999999.99" step="0.01" value="<?= htmlspecialchars($draft['calculated_total_pot']) ?>" readonly aria-readonly="true" title="Calculated automatically from the contribution amount and member slots">
                                 </div>
 
                                 <div class="field-group">
                                     <label for="payment_frequency">Payment Frequency</label>
-                                    <input id="payment_frequency" name="payment_frequency" type="text" required pattern="[Ww][Ee][Ee][Kk][Ll][Yy]|[Mm][Oo][Nn][Tt][Hh][Ll][Yy]" placeholder="Weekly or Monthly" title="Enter Weekly or Monthly" value="<?= htmlspecialchars($draft['payment_frequency'] ?? '') ?>">
+                                    <select id="payment_frequency" class="filter-style-select" name="payment_frequency" required>
+                                        <option value="">Select frequency</option>
+                                        <?php foreach ($paymentFrequencyOptions as $value => $label): ?>
+                                            <option value="<?= htmlspecialchars($value) ?>" <?= ($draft['payment_frequency'] ?? '') === $value ? 'selected' : '' ?>><?= htmlspecialchars($label) ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
                                 </div>
 
                                 <div class="field-group">
@@ -135,23 +182,24 @@ $username = $_SESSION['user']['username'] ?? 'User';
 
                     <div class="payment-panel">
                         <h2>Payment Channels</h2>
+                        <p class="channel-note">Fill in a payment channel, or leave Channel Type blank to use Cash on hand automatically.</p>
 
                         <div id="channel-rows">
                             <?php for ($i = 0; $i < min(3, max(2, count($channelTypes))); $i++): ?>
                                 <div class="channel-row">
                                     <div class="field-group channel-field">
                                         <label>Channel Type (Max 3)</label>
-                                        <input type="text" name="channel_type[]" required maxlength="20" title="GCash, Maya, Bank Transfer, Cash, or Other" value="<?= htmlspecialchars($channelTypes[$i] ?? '') ?>">
+                                        <input type="text" name="channel_type[]" autocomplete="off" maxlength="20" title="GCash, Maya, Bank Transfer, Cash, Cash on hand, or Other" value="<?= htmlspecialchars($channelTypes[$i] ?? '') ?>">
                                     </div>
 
                                     <div class="field-group channel-field">
                                         <label>Name</label>
-                                        <input type="text" name="channel_name[]" required maxlength="100" value="<?= htmlspecialchars($channelNames[$i] ?? '') ?>">
+                                        <input type="text" name="channel_name[]" autocomplete="off" maxlength="100" value="<?= htmlspecialchars($channelNames[$i] ?? '') ?>">
                                     </div>
 
                                     <div class="field-group channel-field">
                                         <label>Number</label>
-                                        <input type="text" name="channel_number[]" required maxlength="50" value="<?= htmlspecialchars($channelNumbers[$i] ?? '') ?>">
+                                        <input type="text" name="channel_number[]" autocomplete="off" inputmode="numeric" pattern="[0-9]{11}" maxlength="11" title="Enter exactly 11 digits." value="<?= htmlspecialchars($channelNumbers[$i] ?? '') ?>">
                                     </div>
                                 </div>
                             <?php endfor; ?>
@@ -182,15 +230,15 @@ $username = $_SESSION['user']['username'] ?? 'User';
                 row.innerHTML = `
                     <div class="field-group channel-field">
                         <label>Channel Type (Max 3)</label>
-                        <input type="text" name="channel_type[]" required maxlength="20" title="GCash, Maya, Bank Transfer, Cash, or Other" value="">
+                        <input type="text" name="channel_type[]" autocomplete="off" maxlength="20" title="GCash, Maya, Bank Transfer, Cash, Cash on hand, or Other" value="">
                     </div>
                     <div class="field-group channel-field">
                         <label>Name</label>
-                        <input type="text" name="channel_name[]" required maxlength="100" value="">
+                        <input type="text" name="channel_name[]" autocomplete="off" maxlength="100" value="">
                     </div>
                     <div class="field-group channel-field">
                         <label>Number</label>
-                        <input type="text" name="channel_number[]" required maxlength="50" value="">
+                        <input type="text" name="channel_number[]" autocomplete="off" inputmode="numeric" pattern="[0-9]{11}" maxlength="11" title="Enter exactly 11 digits." value="">
                     </div>
                 `;
                 channelRows.appendChild(row);
@@ -220,12 +268,17 @@ $username = $_SESSION['user']['username'] ?? 'User';
             input.setCustomValidity('');
             if (input.required && !input.value.trim()) {
                 input.setCustomValidity('Please complete this field.');
-            } else if (input.name === 'channel_type[]'
-                && !['gcash', 'maya', 'paymaya', 'bank transfer', 'cash', 'other'].includes(input.value.trim().toLowerCase())) {
-                input.setCustomValidity('Choose GCash, Maya, Bank Transfer, Cash, or Other.');
+            } else if (input.name === 'channel_type[]' && input.value.trim() !== ''
+                && !['gcash', 'maya', 'paymaya', 'bank transfer', 'cash', 'cash on hand', 'other'].includes(input.value.trim().toLowerCase())) {
+                input.setCustomValidity('Choose GCash, Maya, Bank Transfer, Cash, Cash on hand, or Other.');
+            } else if (input.name === 'channel_number[]' && input.value !== '' && !/^[0-9]{11}$/.test(input.value)) {
+                input.setCustomValidity('Enter exactly 11 digits.');
             }
         }
         form.addEventListener('input', event => {
+            if (event.target.matches('input[name="channel_number[]"]')) {
+                event.target.value = event.target.value.replace(/[^0-9]/g, '').slice(0, 11);
+            }
             if (event.target.matches('input')) validateField(event.target);
         });
         form.addEventListener('submit', event => {
@@ -233,5 +286,6 @@ $username = $_SESSION['user']['username'] ?? 'User';
             if (!form.reportValidity()) event.preventDefault();
         });
     </script>
+<script src="../LOGIN_PAGE/tab-auth.js?v=<?= filemtime(__DIR__ . '/../LOGIN_PAGE/tab-auth.js') ?>"></script>
 </body>
 </html>
