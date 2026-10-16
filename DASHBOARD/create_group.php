@@ -24,17 +24,29 @@ if ($limitError !== null) {
 
 $draft = $_SESSION['draft_group'] ?? [];
 
+// Discard stale fractional or out-of-range contribution drafts so the stepper starts cleanly.
+$contributionDraft = $draft['contribution_amount'] ?? '';
+if (!is_string($contributionDraft) || !preg_match('/^[1-9]\d{0,4}$/D', $contributionDraft)
+    || (int) $contributionDraft > 20000) {
+    $draft['contribution_amount'] = '';
+}
+$lateFeeDraft = $draft['late_fee_rate'] ?? '';
+if (!is_string($lateFeeDraft) || !preg_match('/^(?:0|[1-9]\d{0,4})$/D', $lateFeeDraft)
+    || (int) $lateFeeDraft > 20000) {
+    $draft['late_fee_rate'] = '';
+}
+
 function createGroupCalculatedPot(string $contribution, string $slots): string
 {
-    if (!preg_match('/^\d{1,8}(?:\.\d{1,2})?$/D', $contribution)
+    if (!preg_match('/^[1-9]\d{0,4}$/D', $contribution)
         || !preg_match('/^[1-9]\d{0,9}$/D', $slots)) return '';
 
     $memberSlots = (int) $slots;
     if ($memberSlots > 12) return '';
 
-    [$whole, $fraction] = array_pad(explode('.', $contribution, 2), 2, '');
-    $contributionCents = (int) $whole * 100 + (int) str_pad($fraction, 2, '0');
-    if ($contributionCents < 1 || $contributionCents > intdiv(9999999999, $memberSlots)) return '';
+    $contributionCents = (int) $contribution * 100;
+    if ($contributionCents < 1 || $contributionCents > 2000000
+        || $contributionCents > intdiv(9999999999, $memberSlots)) return '';
 
     $totalCents = $contributionCents * $memberSlots;
     return intdiv($totalCents, 100) . '.' . str_pad((string) ($totalCents % 100), 2, '0', STR_PAD_LEFT);
@@ -143,17 +155,17 @@ $username = $_SESSION['user']['username'] ?? 'User';
                             <div class="mini-grid">
                                 <div class="field-group contribution-field">
                                     <label for="contribution_amount">Contribution Amount</label>
-                                    <input id="contribution_amount" name="contribution_amount" type="number" required min="0.01" max="99999999.99" step="0.01" value="<?= htmlspecialchars($draft['contribution_amount'] ?? '') ?>">
+                                    <input id="contribution_amount" name="contribution_amount" type="number" required min="1" max="20000" step="1" value="<?= htmlspecialchars($draft['contribution_amount'] ?? '') ?>">
                                 </div>
 
                                 <div class="field-group">
                                     <label for="total_member_slots">Total Member Slots</label>
-                                    <input id="total_member_slots" name="total_member_slots" type="number" required min="1" max="2147483647" step="1" value="<?= htmlspecialchars($draft['total_member_slots'] ?? '') ?>">
+                                    <input id="total_member_slots" name="total_member_slots" type="number" required min="1" max="12" step="1" value="<?= htmlspecialchars($draft['total_member_slots'] ?? '') ?>">
                                 </div>
 
                                 <div class="field-group">
                                     <label for="late_fee_rate">Late Fee Rate</label>
-                                    <input id="late_fee_rate" name="late_fee_rate" type="number" required min="0" max="99999999.99" step="0.01" value="<?= htmlspecialchars($draft['late_fee_rate'] ?? '') ?>">
+                                    <input id="late_fee_rate" name="late_fee_rate" type="number" required min="0" max="20000" step="1" value="<?= htmlspecialchars($draft['late_fee_rate'] ?? '') ?>">
                                 </div>
 
                                 <div class="field-group">
@@ -164,7 +176,7 @@ $username = $_SESSION['user']['username'] ?? 'User';
                                 <div class="field-group">
                                     <label for="payment_frequency">Payment Frequency</label>
                                     <select id="payment_frequency" class="filter-style-select" name="payment_frequency" required>
-                                        <option value="">Select frequency</option>
+                                        <option value="" disabled hidden <?= empty($draft['payment_frequency']) ? 'selected' : '' ?>>Select</option>
                                         <?php foreach ($paymentFrequencyOptions as $value => $label): ?>
                                             <option value="<?= htmlspecialchars($value) ?>" <?= ($draft['payment_frequency'] ?? '') === $value ? 'selected' : '' ?>><?= htmlspecialchars($label) ?></option>
                                         <?php endforeach; ?>
@@ -248,6 +260,7 @@ $username = $_SESSION['user']['username'] ?? 'User';
 
         const form = document.querySelector('.create-form');
         const contribution = document.getElementById('contribution_amount');
+        const lateFeeRate = document.getElementById('late_fee_rate');
         const slots = document.getElementById('total_member_slots');
         const pot = document.getElementById('calculated_total_pot');
 
@@ -261,7 +274,17 @@ $username = $_SESSION['user']['username'] ?? 'User';
             }
             validateField(pot);
         }
-        contribution.addEventListener('input', calculatePot);
+        contribution.addEventListener('input', () => {
+            if (Number(contribution.value) > 20000) {
+                contribution.value = '20000';
+            }
+            calculatePot();
+        });
+        lateFeeRate.addEventListener('input', () => {
+            if (Number(lateFeeRate.value) > 20000) {
+                lateFeeRate.value = '20000';
+            }
+        });
         slots.addEventListener('input', calculatePot);
 
         function validateField(input) {

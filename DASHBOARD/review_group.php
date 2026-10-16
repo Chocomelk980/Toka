@@ -106,12 +106,11 @@ if (!$draft) {
 $draft['calculated_total_pot'] = '';
 $contributionText = $draft['contribution_amount'] ?? '';
 $slotText = $draft['total_member_slots'] ?? '';
-if (is_string($contributionText) && preg_match('/^\d{1,8}(?:\.\d{1,2})?$/D', $contributionText)
+if (is_string($contributionText) && preg_match('/^[1-9]\d{0,4}$/D', $contributionText)
     && is_string($slotText) && preg_match('/^[1-9]\d{0,9}$/D', $slotText)) {
     $memberSlots = (int) $slotText;
-    [$whole, $fraction] = array_pad(explode('.', $contributionText, 2), 2, '');
-    $contributionCents = (int) $whole * 100 + (int) str_pad($fraction, 2, '0');
-    if ($memberSlots <= 2147483647 && $contributionCents > 0
+    $contributionCents = (int) $contributionText * 100;
+    if ($memberSlots <= 12 && $contributionCents > 0 && $contributionCents <= 2000000
         && $contributionCents <= intdiv(9999999999, $memberSlots)) {
         $totalCents = $contributionCents * $memberSlots;
         $draft['calculated_total_pot'] = intdiv($totalCents, 100) . '.'
@@ -175,17 +174,25 @@ foreach (['contribution_amount', 'late_fee_rate', 'calculated_total_pot'] as $fi
 
     }
 
-    if (!preg_match('/^\d{1,8}(?:\.\d{1,2})?$/D', $value)) {
+    if ($field === 'contribution_amount' || $field === 'late_fee_rate') {
+        $minimumAmount = $field === 'contribution_amount' ? 1 : 0;
+        $wholeAmountPattern = $minimumAmount === 0 ? '/^(?:0|[1-9]\d{0,4})$/D' : '/^[1-9]\d{0,4}$/D';
+        if (!preg_match($wholeAmountPattern, $value) || (int) $value > 20000) {
+            $errors[] = $labels[$field] . ' must be a whole number from ' . $minimumAmount . ' to 20,000.';
+            continue;
+        }
+
+        $cents[$field] = (int) $value * 100;
+    } elseif (!preg_match('/^\d{1,8}(?:\.\d{1,2})?$/D', $value)) {
 
         $errors[] = $labels[$field] . ' must be between 0 and 99,999,999.99 with at most two decimal places.';
 
         continue;
 
+    } else {
+        [$whole, $fraction] = array_pad(explode('.', $value, 2), 2, '');
+        $cents[$field] = (int) $whole * 100 + (int) str_pad($fraction, 2, '0');
     }
-
-    [$whole, $fraction] = array_pad(explode('.', $value, 2), 2, '');
-
-    $cents[$field] = (int) $whole * 100 + (int) str_pad($fraction, 2, '0');
 
     if ($field !== 'late_fee_rate' && $cents[$field] === 0) {
 
@@ -210,13 +217,13 @@ foreach (['total_member_slots' => 1] as $field => $minimum) {
 
     $integers[$field] = filter_var($value, FILTER_VALIDATE_INT, [
 
-        'options' => ['min_range' => $minimum, 'max_range' => 2147483647],
+        'options' => ['min_range' => $minimum, 'max_range' => 12],
 
     ]);
 
     if ($integers[$field] === false) {
 
-        $errors[] = $labels[$field] . ' must be a whole number from ' . $minimum . ' to 2,147,483,647.';
+        $errors[] = $labels[$field] . ' must be a whole number from ' . $minimum . ' to 12.';
 
     }
 

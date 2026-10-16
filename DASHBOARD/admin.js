@@ -8,20 +8,133 @@
     const userRows = Array.from(byId('user-roster')?.children || []);
     const auditRows = Array.from(byId('audit-rows')?.children || []);
     const disputeRows = Array.from(byId('dispute-rows')?.children || []);
-    const auditPageSize = 10;
+    const pageSize = 10;
+    const userPageSize = 7;
     let auditPage = 1;
+    let userPage = 1;
     let pending = null;
     let trigger = null;
     let toastTimer;
+    const userPagination = createPaginationNav(byId('user-roster'), 'User roster pages');
+
+    function createPaginationNav(anchor, label) {
+        if (!anchor) return null;
+        const nav = document.createElement('nav');
+        nav.className = 'admin-pagination';
+        nav.setAttribute('aria-label', label);
+        nav.hidden = true;
+        anchor.after(nav);
+        return nav;
+    }
+
+    function paginateRows(rows, matchingRows, requestedPage, rowsPerPage = pageSize) {
+        const pageCount = Math.ceil(matchingRows.length / rowsPerPage);
+        const currentPage = Math.max(1, Math.min(requestedPage, pageCount || 1));
+        const startIndex = (currentPage - 1) * rowsPerPage;
+        const endIndex = Math.min(startIndex + rowsPerPage, matchingRows.length);
+        rows.forEach(row => { row.hidden = true; });
+        matchingRows.slice(startIndex, endIndex).forEach(row => { row.hidden = false; });
+        return { currentPage, pageCount, startIndex, endIndex };
+    }
+
+    function renderPagination(nav, page, onChange) {
+        if (!nav) return;
+        const { currentPage, pageCount } = page;
+        nav.hidden = pageCount <= 1;
+        let controls = nav.querySelector('.pagination-controls');
+        let status = nav.querySelector('.sr-only');
+        if (!controls) {
+            controls = document.createElement('div');
+            controls.className = 'pagination-controls';
+            status = document.createElement('span');
+            status.className = 'sr-only';
+            status.setAttribute('role', 'status');
+            status.setAttribute('aria-live', 'polite');
+            status.setAttribute('aria-atomic', 'true');
+            nav.append(controls, status);
+        }
+        status.textContent = `Page ${currentPage} of ${pageCount || 1}`;
+        controls.replaceChildren();
+        if (pageCount <= 1) return;
+
+        function addButton(destination, text, key, disabled = false) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'page-control';
+            button.dataset.pageControl = key;
+            button.disabled = disabled;
+            if (key === 'prev' || key === 'next') {
+                button.classList.add('page-arrow');
+                button.setAttribute('aria-label', key === 'prev' ? 'Previous page' : 'Next page');
+                const arrow = document.createElement('span');
+                arrow.setAttribute('aria-hidden', 'true');
+                arrow.textContent = text;
+                button.append(arrow);
+            } else {
+                button.textContent = text;
+                button.setAttribute('aria-label', `Page ${destination}`);
+                if (destination === currentPage) button.setAttribute('aria-current', 'page');
+            }
+            button.addEventListener('click', () => {
+                onChange(destination);
+                const replacement = nav.querySelector(`[data-page-control="${key}"]`);
+                const focusTarget = replacement && !replacement.disabled
+                    ? replacement : nav.querySelector('[aria-current="page"]');
+                focusTarget?.focus({ preventScroll: true });
+            });
+            controls.append(button);
+        }
+
+        addButton(currentPage - 1, '‹', 'prev', currentPage <= 1);
+        const pageNumbers = [];
+        if (pageCount <= 7) {
+            for (let number = 1; number <= pageCount; number++) pageNumbers.push(number);
+        } else {
+            pageNumbers.push(1);
+            const start = Math.max(2, Math.min(currentPage - 1, pageCount - 2));
+            const end = Math.min(pageCount - 1, Math.max(currentPage + 1, 3));
+            for (let number = start; number <= end; number++) pageNumbers.push(number);
+            pageNumbers.push(pageCount);
+        }
+        let previousPage = 0;
+        pageNumbers.forEach(number => {
+            if (number - previousPage === 2) {
+                addButton(previousPage + 1, String(previousPage + 1), String(previousPage + 1));
+            } else if (number - previousPage > 2) {
+                const ellipsis = document.createElement('span');
+                ellipsis.className = 'page-ellipsis';
+                ellipsis.setAttribute('aria-hidden', 'true');
+                ellipsis.textContent = '…';
+                controls.append(ellipsis);
+            }
+            addButton(number, String(number), String(number));
+            previousPage = number;
+        });
+        addButton(currentPage + 1, '›', 'next', currentPage >= pageCount);
+    }
+
+    function paginateTable(tbody, anchor, label) {
+        if (!tbody || !anchor || tbody.dataset.available === 'false') return;
+        const rows = Array.from(tbody.children).filter(row => !row.querySelector('.table-empty'));
+        const nav = createPaginationNav(anchor, label);
+        function render(requestedPage) {
+            const page = paginateRows(rows, rows, requestedPage);
+            renderPagination(nav, page, render);
+        }
+        render(1);
+    }
 
     function renderUsers() {
         const roster = byId('user-roster');
         if (!roster || roster.dataset.available !== 'true') return;
         const query = search ? search.value.trim().toLocaleLowerCase() : '';
-        let visibleCount = 0;
-        userRows.forEach(row => {
-            row.hidden = !row.dataset.search.toLocaleLowerCase().includes(query);
-            if (!row.hidden) visibleCount++;
+        const matchingRows = userRows.filter(row => row.dataset.search.toLocaleLowerCase().includes(query));
+        const visibleCount = matchingRows.length;
+        const page = paginateRows(userRows, matchingRows, userPage, userPageSize);
+        userPage = page.currentPage;
+        renderPagination(userPagination, page, requestedPage => {
+            userPage = requestedPage;
+            renderUsers();
         });
         const usersEmpty = byId('users-empty');
         if (usersEmpty) usersEmpty.hidden = visibleCount > 0;
@@ -37,21 +150,13 @@
         if (!auditTbody || auditTbody.dataset.available !== 'true') return;
         const query = auditSearch ? auditSearch.value.trim().toLocaleLowerCase() : '';
         const matchingRows = auditRows.filter(row => row.dataset.search.toLocaleLowerCase().includes(query));
-        const pageCount = Math.ceil(matchingRows.length / auditPageSize);
-        auditPage = Math.max(1, Math.min(auditPage, pageCount || 1));
-        const startIndex = (auditPage - 1) * auditPageSize;
-        const endIndex = Math.min(startIndex + auditPageSize, matchingRows.length);
-        auditRows.forEach(row => { row.hidden = true; });
-        matchingRows.slice(startIndex, endIndex).forEach(row => { row.hidden = false; });
-
-        const pagination = byId('audit-pagination');
-        if (pagination) pagination.hidden = pageCount <= 1;
-        const pageStatus = byId('audit-page-status');
-        if (pageStatus) pageStatus.textContent = `Page ${auditPage} of ${pageCount || 1}`;
-        const prevBtn = byId('audit-prev');
-        if (prevBtn) prevBtn.disabled = auditPage <= 1;
-        const nextBtn = byId('audit-next');
-        if (nextBtn) nextBtn.disabled = auditPage >= pageCount;
+        const page = paginateRows(auditRows, matchingRows, auditPage);
+        const { startIndex, endIndex } = page;
+        auditPage = page.currentPage;
+        renderPagination(byId('audit-pagination'), page, requestedPage => {
+            auditPage = requestedPage;
+            renderAudit();
+        });
 
         const auditEmpty = byId('audit-empty');
         if (auditEmpty) auditEmpty.hidden = matchingRows.length > 0;
@@ -61,12 +166,6 @@
                 ? `Showing audit records ${startIndex + 1}-${endIndex} of ${matchingRows.length}.`
                 : 'No matching audit records.';
         }
-    }
-
-    function changeAuditPage(page, focusControl) {
-        auditPage = page;
-        renderAudit();
-        byId(focusControl)?.focus();
     }
 
     function announce(message) {
@@ -138,14 +237,17 @@
         }
     });
 
-    if (search) search.addEventListener('input', renderUsers);
+    if (search) search.addEventListener('input', () => { userPage = 1; renderUsers(); });
     if (auditSearch) auditSearch.addEventListener('input', () => { auditPage = 1; renderAudit(); });
-    byId('audit-prev')?.addEventListener('click', () => changeAuditPage(auditPage - 1, 'audit-prev'));
-    byId('audit-next')?.addEventListener('click', () => changeAuditPage(auditPage + 1, 'audit-next'));
     byId('clear-search')?.addEventListener('click', () => {
-        if (search) { search.value = ''; renderUsers(); search.focus(); }
+        if (search) { search.value = ''; userPage = 1; renderUsers(); search.focus(); }
     });
 
+    paginateTable(byId('dispute-rows'), document.querySelector('.dispute-scroll'), 'Dispute pages');
+    document.querySelectorAll('.admin-panel[id^="section-"]').forEach(panel => {
+        const heading = panel.querySelector('h2')?.textContent.trim() || 'Records';
+        paginateTable(panel.querySelector('tbody'), panel.querySelector('.audit-scroll'), `${heading} pages`);
+    });
     renderUsers();
     renderAudit();
 

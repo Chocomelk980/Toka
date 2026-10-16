@@ -12,6 +12,7 @@ $adminViews = [
     'group-pots' => ['label' => 'Group Pots', 'description' => 'Current round status and money pool values for each group'],
     'frozen-groups' => ['label' => 'Frozen / Flagged Groups', 'description' => 'Groups currently frozen or flagged for review'],
     'user-directory' => ['label' => 'User Directory', 'description' => 'Registration and account details for all users'],
+    'system-audit-logs' => ['label' => 'System Audit Logs', 'description' => 'Read-only global activity ledger'],
 ];
 $requestedAdminView = $_GET['view'] ?? 'dashboard';
 $adminView = is_string($requestedAdminView) && isset($adminViews[$requestedAdminView])
@@ -369,7 +370,8 @@ if ($pdo) {
                     pg.first_payment_due, pg.calculated_total_pot,
                     current_round.round_number, current_round.round_status,
                     current_round.target_deadline,
-                    COALESCE(round_pots.accumulated_pot, 0) AS accumulated_pot
+                    COALESCE(round_pots.accumulated_pot, 0) AS accumulated_pot,
+                    COALESCE(cycle_pots.accumulated_cycle_pot, 0) AS accumulated_cycle_pot
              FROM paluwagan_groups pg
              LEFT JOIN round_schedules current_round
                ON current_round.round_id = (
@@ -387,6 +389,13 @@ if ($pdo) {
                  WHERE p.payment_status = 'Verified'
                  GROUP BY p.round_id
              ) round_pots ON round_pots.round_id = current_round.round_id
+             LEFT JOIN (
+                 SELECT rs.group_id, SUM(p.amount_due) AS accumulated_cycle_pot
+                 FROM round_schedules rs
+                 JOIN payments p ON p.round_id = rs.round_id
+                 WHERE p.payment_status = 'Verified'
+                 GROUP BY rs.group_id
+             ) cycle_pots ON cycle_pots.group_id = pg.group_id
              ORDER BY pg.created_at DESC, pg.group_id DESC"
         )->fetchAll();
     } catch (PDOException $e) {
@@ -469,6 +478,7 @@ function adminActivityKind(string $activity): string
     <title><?= adminH($adminHeading) ?> - Toka</title>
     <link rel="stylesheet" href="dashboard.css?v=<?= filemtime(__DIR__ . '/dashboard.css') ?>">
     <link rel="stylesheet" href="admin.css?v=<?= filemtime(__DIR__ . '/admin.css') ?>">
+    <link rel="stylesheet" href="pagination.css?v=<?= filemtime(__DIR__ . '/pagination.css') ?>">
     <link rel="stylesheet" href="../assets/typography.css?v=<?= filemtime(__DIR__ . '/../assets/typography.css') ?>">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link rel="icon" type="image/svg+xml" href="../assets/toka_icon.svg">
@@ -497,6 +507,9 @@ function adminActivityKind(string $activity): string
                     </a>
                     <a href="admin.php?view=user-directory" class="nav-item<?= $adminView === 'user-directory' ? ' active' : '' ?>"<?= $adminView === 'user-directory' ? ' aria-current="page"' : '' ?>>
                         <span class="nav-icon" aria-hidden="true"><i class="fa-solid fa-address-book"></i></span><span>User Directory</span>
+                    </a>
+                    <a href="admin.php?view=system-audit-logs" class="nav-item<?= $adminView === 'system-audit-logs' ? ' active' : '' ?>"<?= $adminView === 'system-audit-logs' ? ' aria-current="page"' : '' ?>>
+                        <span class="nav-icon" aria-hidden="true"><i class="fa-solid fa-clipboard-list"></i></span><span>System Audit Logs</span>
                     </a>
                 </nav>
             </div>
@@ -584,6 +597,9 @@ function adminActivityKind(string $activity): string
                 </section>
             </div>
 
+            <?php endif; ?>
+
+            <?php if ($adminView === 'system-audit-logs'): ?>
             <section class="admin-panel audit-panel" aria-labelledby="audit-heading">
                 <header class="audit-heading">
                     <div><h2 id="audit-heading">Master System Audit Search</h2><p>Read-only global activity ledger</p></div>
@@ -609,11 +625,7 @@ function adminActivityKind(string $activity): string
                         </tbody>
                     </table>
                 </div>
-                <nav id="audit-pagination" class="audit-pagination" aria-label="Audit log pages" hidden>
-                    <button id="audit-prev" class="admin-button secondary" type="button">Previous</button>
-                    <span id="audit-page-status" class="audit-page-status" aria-live="polite"></span>
-                    <button id="audit-next" class="admin-button secondary" type="button">Next</button>
-                </nav>
+                <nav id="audit-pagination" class="admin-pagination" aria-label="Audit log pages" hidden></nav>
                 <p id="audit-empty" class="audit-empty" role="status" <?= $auditLogs || $auditError !== '' ? 'hidden' : '' ?>><?= $auditLogs ? 'No audit activity matches your search.' : 'No audit activity has been recorded yet.' ?></p>
                 <p id="audit-count" class="sr-only" role="status" aria-live="polite"><?= $auditError !== '' ? 'Audit count unavailable.' : count($auditLogs) . ' audit records shown.' ?></p>
             </section>
@@ -672,12 +684,12 @@ function adminActivityKind(string $activity): string
 
             <?php if ($adminView === 'group-pots'): ?>
             <section id="section-group-pots" class="admin-panel audit-panel" aria-labelledby="group-pots-heading">
-                <header class="audit-heading"><div><h2 id="group-pots-heading">Group Pots</h2><p>Verified payments in each current round compared with its expected pot</p></div></header>
+                <header class="audit-heading"><div><h2 id="group-pots-heading">Group Pots</h2><p>Current-round verified payments, expected pots, and total verified contributions across each cycle</p></div></header>
                 <?php if ($potsError !== ''): ?><p class="admin-notice" role="alert"><?= adminH($potsError) ?></p><?php endif; ?>
                 <div class="audit-scroll" tabindex="0" role="region" aria-label="Group round pots">
                     <table class="audit-table">
-                        <caption class="sr-only">Current round statuses, due dates, accumulated pots, and expected pots for all groups.</caption>
-                        <thead><tr><th scope="col">Group Name / Group ID</th><th scope="col">Round Status and Due Date</th><th scope="col">Accumulated Pot</th><th scope="col">Expected Pot by Round End</th></tr></thead>
+                        <caption class="sr-only">Current round statuses, due dates, accumulated pots, expected pots, and total verified contributions across all rounds of each group's cycle.</caption>
+                        <thead><tr><th scope="col">Group Name / Group ID</th><th scope="col">Round Status and Due Date</th><th scope="col">Accumulated Pot</th><th scope="col">Expected Pot by Round End</th><th scope="col" title="Verified contributions across all rounds, including paid-out rounds. Excludes late fees.">Total Accumulation</th></tr></thead>
                         <tbody>
                             <?php foreach ($groupPots as $group): ?>
                                 <?php
@@ -691,9 +703,10 @@ function adminActivityKind(string $activity): string
                                     <td><span class="status-pill"><?= adminH($potStatus) ?></span><small class="table-subtext">Due: <?= adminH(adminDateTime($potDue)) ?></small></td>
                                     <td class="audit-ref">&#8369;<?= adminH(number_format((float) $group['accumulated_pot'], 2)) ?></td>
                                     <td class="audit-ref">&#8369;<?= adminH(number_format((float) $group['calculated_total_pot'], 2)) ?></td>
+                                    <td class="audit-ref">&#8369;<?= adminH(number_format((float) $group['accumulated_cycle_pot'], 2)) ?></td>
                                 </tr>
                             <?php endforeach; ?>
-                            <?php if (!$groupPots && $potsError === ''): ?><tr><td colspan="4" class="table-empty">No group pot records are available.</td></tr><?php endif; ?>
+                            <?php if (!$groupPots && $potsError === ''): ?><tr><td colspan="5" class="table-empty">No group pot records are available.</td></tr><?php endif; ?>
                         </tbody>
                     </table>
                 </div>

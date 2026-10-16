@@ -119,6 +119,7 @@ if ($group && $isCsvExport) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= $group ? logH($group['group_name']) . ' Logs - Toka' : 'Group Logs - Toka' ?></title>
     <link rel="stylesheet" href="group_views.css?v=<?= filemtime(__DIR__ . '/group_views.css') ?>">
+    <link rel="stylesheet" href="pagination.css?v=<?= filemtime(__DIR__ . '/pagination.css') ?>">
     <link rel="stylesheet" href="../assets/typography.css?v=<?= filemtime(__DIR__ . '/../assets/typography.css') ?>">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link rel="icon" type="image/svg+xml" href="../assets/toka_icon.svg">
@@ -197,15 +198,37 @@ if ($group && $isCsvExport) {
                     </span>
                     <div class="pagination-controls">
                         <?php if ($currentPage > 1): ?>
-                            <a class="page-control" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $currentPage - 1 ?>" rel="prev">Previous</a>
+                            <a class="page-control page-arrow" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $currentPage - 1 ?>" rel="prev" aria-label="Previous page"><span aria-hidden="true">&#8249;</span></a>
                         <?php else: ?>
-                            <span class="page-control disabled" aria-disabled="true">Previous</span>
+                            <button class="page-control page-arrow" type="button" aria-label="Previous page" disabled><span aria-hidden="true">&#8249;</span></button>
                         <?php endif; ?>
-                        <span class="pagination-current">Page <?= $currentPage ?> of <?= $totalPages ?></span>
+                        <?php
+                        $pageNumbers = $totalPages <= 7
+                            ? range(1, $totalPages)
+                            : array_merge(
+                                [1],
+                                range(max(2, min($currentPage - 1, $totalPages - 2)), min($totalPages - 1, max($currentPage + 1, 3))),
+                                [$totalPages]
+                            );
+                        $previousPageNumber = 0;
+                        ?>
+                        <?php foreach ($pageNumbers as $pageNumber): ?>
+                            <?php if ($pageNumber - $previousPageNumber === 2): ?>
+                                <a class="page-control" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $previousPageNumber + 1 ?>" aria-label="Page <?= $previousPageNumber + 1 ?>"><?= $previousPageNumber + 1 ?></a>
+                            <?php elseif ($pageNumber - $previousPageNumber > 2): ?>
+                                <span class="page-ellipsis" aria-hidden="true">&hellip;</span>
+                            <?php endif; ?>
+                            <?php if ($pageNumber === $currentPage): ?>
+                                <span class="page-control" aria-current="page" aria-label="Page <?= $pageNumber ?>"><?= $pageNumber ?></span>
+                            <?php else: ?>
+                                <a class="page-control" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $pageNumber ?>" aria-label="Page <?= $pageNumber ?>"><?= $pageNumber ?></a>
+                            <?php endif; ?>
+                            <?php $previousPageNumber = $pageNumber; ?>
+                        <?php endforeach; ?>
                         <?php if ($currentPage < $totalPages): ?>
-                            <a class="page-control" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $currentPage + 1 ?>" rel="next">Next</a>
+                            <a class="page-control page-arrow" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $currentPage + 1 ?>" rel="next" aria-label="Next page"><span aria-hidden="true">&#8250;</span></a>
                         <?php else: ?>
-                            <span class="page-control disabled" aria-disabled="true">Next</span>
+                            <button class="page-control page-arrow" type="button" aria-label="Next page" disabled><span aria-hidden="true">&#8250;</span></button>
                         <?php endif; ?>
                     </div>
                 </nav>

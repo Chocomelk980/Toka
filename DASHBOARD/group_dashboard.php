@@ -26,6 +26,8 @@ $actionMessage = '';
 $currentMember = null;
 $currentRound = null;
 $memberPayments = [];
+$trustScoreHistory = [];
+$trustScoreHistoryUnavailable = false;
 $pendingRequests = [];
 $freezePolls = [];
 $activeFreezePoll = null;
@@ -49,6 +51,42 @@ $freezeOtherReason = 'Other/Manual Dispute';
 function h($value): string
 {
     return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+}
+
+function groupTrustScoreHistory(PDO $pdo, int $groupId): array
+{
+    $stmt = $pdo->prepare(
+        'SELECT gm.member_id, rs.round_number, al.activity_type, al.details
+         FROM audit_logs al
+         JOIN payments p ON p.payment_id = al.payment_id
+         JOIN group_members gm ON gm.member_id = p.member_id AND gm.group_id = al.group_id
+         JOIN round_schedules rs ON rs.round_id = p.round_id AND rs.group_id = al.group_id
+         WHERE al.group_id = :group_id
+           AND al.activity_type IN (\'Payment Verified\', \'Payment Marked Missed\')
+         ORDER BY al.timestamp DESC, al.log_id DESC'
+    );
+    $stmt->execute([':group_id' => $groupId]);
+    $history = [];
+    while ($entry = $stmt->fetch()) {
+        $memberId = (int) $entry['member_id'];
+        if (count($history[$memberId] ?? []) >= 5
+            || !preg_match('/;\s*trust score ([+-]\d+) points\.?$/iD', (string) $entry['details'], $match)) {
+            continue;
+        }
+        $adjustment = (int) $match[1];
+        $reason = $entry['activity_type'] === 'Payment Marked Missed' ? 'Missed payment' : match ($adjustment) {
+            5 => 'Paid on time',
+            -10 => '1-2 days late',
+            -25 => '3+ days late',
+            default => 'Payment adjustment',
+        };
+        $history[$memberId][] = [
+            'round_number' => (int) $entry['round_number'],
+            'adjustment' => $adjustment,
+            'reason' => $reason,
+        ];
+    }
+    return $history;
 }
 
 function groupDate(?string $value, string $format = 'M j, Y'): string
@@ -246,6 +284,13 @@ if ($groupId) {
             );
             $stmt->execute([':group_id' => $groupId]);
             $activity = $stmt->fetchAll();
+
+            try {
+                $trustScoreHistory = groupTrustScoreHistory($pdo, (int) $groupId);
+            } catch (PDOException $e) {
+                $trustScoreHistoryUnavailable = true;
+                error_log('Trust score history could not be loaded: ' . $e->getMessage());
+            }
 
             if ($group['viewer_role'] === 'Main Operator') {
                 $stmt = $pdo->prepare(
@@ -1079,7 +1124,19 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                         <div><span>Payment window ends:</span><strong><?= h($paymentGraceDeadline->format('M j, Y g:i A')) ?></strong></div>
                     <?php endif; ?>
                     <div class="late-fee">Late Fee Rate: <?= '₱' . h(number_format((float) $group['late_fee_rate'], 2)) ?>
-                        <span class="info-tip" title="Late fee charged for an overdue contribution." aria-label="Late fee information">i</span>
+                        <div class="late-fee-help">
+                            <button type="button" class="info-tip" aria-label="Late fee and payment points information" aria-describedby="late-fee-tooltip">i</button>
+                            <div class="late-fee-tooltip" id="late-fee-tooltip" role="tooltip">
+                                <span class="late-fee-tooltip-title">Late Fee Rate</span>
+                                <p>Late fee charged for an overdue contribution.</p>
+                                <ul class="late-fee-points">
+                                    <li><strong class="on-time-points">+5 pts</strong> if paid on time</li>
+                                    <li><strong>-10 pts</strong> if 1&ndash;2 days late</li>
+                                    <li><strong>-25 pts</strong> if 3+ days late</li>
+                                    <li><strong>-50 pts</strong> if missed payment completely</li>
+                                </ul>
+                            </div>
+                        </div>
                     </div>
                     <div class="top-actions">
                         <a class="outline-button" href="group_logs.php?id=<?= (int) $groupId ?>">View Logs</a>
@@ -1216,7 +1273,9 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                             </div>
                         </div>
                         <div class="member-right">
-                            <strong>Trust: <?= (int) $member['trust_score'] ?></strong>
+                            <button type="button" class="trust-score-trigger"
+                                    aria-label="<?= h($member['username'] . "'s trust score: " . (int) $member['trust_score'] . ' out of 100') ?>"
+                                    aria-describedby="trust-score-tooltip-<?= (int) $member['member_id'] ?>">Trust: <?= (int) $member['trust_score'] ?></button>
                             <span class="slot-badge">Slot #<?= (int) $member['assigned_slot_number'] ?></span>
                         </div>
                     </article>
@@ -1225,6 +1284,28 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                     No members found with status "<span id="empty-filter-status"></span>".
                 </div>
             </section>
+
+            <?php foreach ($members as $member): ?>
+                <div class="trust-score-tooltip" id="trust-score-tooltip-<?= (int) $member['member_id'] ?>" role="tooltip">
+                    <span class="trust-score-tooltip-title"><?= h($member['username'] . "'s Score History") ?></span>
+                    <p class="trust-score-current">Current: <strong><?= (int) $member['trust_score'] ?>/100</strong></p>
+                    <?php if ($trustScoreHistoryUnavailable): ?>
+                        <p class="trust-score-empty">Score history is currently unavailable.</p>
+                    <?php elseif (!empty($trustScoreHistory[(int) $member['member_id']])): ?>
+                        <p class="trust-score-history-label">Recent changes in this group</p>
+                        <ul class="trust-score-history">
+                            <?php foreach ($trustScoreHistory[(int) $member['member_id']] as $scoreEntry): ?>
+                                <li>Round <?= (int) $scoreEntry['round_number'] ?>:
+                                    <strong class="<?= $scoreEntry['adjustment'] > 0 ? 'trust-score-gain' : 'trust-score-loss' ?>"><?= $scoreEntry['adjustment'] > 0 ? '+' : '' ?><?= (int) $scoreEntry['adjustment'] ?> pts</strong>
+                                    (<?= h($scoreEntry['reason']) ?>)
+                                </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php else: ?>
+                        <p class="trust-score-empty">No score changes recorded in this group.</p>
+                    <?php endif; ?>
+                </div>
+            <?php endforeach; ?>
 
             <?php if ($isOperator && $pendingRequests): ?>
                 <dialog class="join-requests-dialog" id="join-requests-dialog">
@@ -1272,9 +1353,7 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                     <span class="operator-mark"><i class="<?= $isOperator ? 'fa-solid fa-crown' : ($isCoOperator ? 'fa-solid fa-user-shield' : 'fa-solid fa-user') ?>"></i></span>
                     <div>
                         <strong>Username: <?= h($username) ?></strong>
-                        <span>Role: <?= h($currentMember['role'] ?? 'Member') ?> <b>|</b> Status:
-                            <span class="<?= $statusVerified ? 'text-verified' : 'text-pending' ?>"><?= $statusVerified ? 'Verified' : h($currentMember['account_status'] ?? 'Unknown') ?></span>
-                        </span>
+                        <span>Role: <?= h($currentMember['role'] ?? 'Member') ?></span>
                     </div>
                 </div>
                 <div class="operator-actions">
@@ -1459,6 +1538,96 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
     </main>
 </div>
 <script>
+    const lateFeeHelp = document.querySelector('.late-fee-help');
+    const lateFeeTooltip = document.getElementById('late-fee-tooltip');
+    function positionLateFeeTooltip() {
+        if (!lateFeeHelp || !lateFeeTooltip) return;
+        const tooltipRight = lateFeeHelp.getBoundingClientRect().right;
+        const tooltipLeft = tooltipRight - lateFeeTooltip.offsetWidth;
+        const viewportWidth = document.documentElement.clientWidth;
+        const offset = tooltipLeft < 12 ? 12 - tooltipLeft
+            : tooltipRight > viewportWidth - 12 ? viewportWidth - 12 - tooltipRight : 0;
+        lateFeeTooltip.style.setProperty('--tooltip-offset', `${offset}px`);
+    }
+    function showLateFeeTooltip() {
+        if (!lateFeeHelp) return;
+        delete lateFeeHelp.dataset.dismissed;
+        positionLateFeeTooltip();
+    }
+    lateFeeHelp?.addEventListener('mouseenter', showLateFeeTooltip);
+    lateFeeHelp?.addEventListener('focusin', showLateFeeTooltip);
+    lateFeeHelp?.querySelector('.info-tip')?.addEventListener('click', event => {
+        event.currentTarget.focus();
+        showLateFeeTooltip();
+    });
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && lateFeeHelp?.matches(':hover, :focus-within')) {
+            lateFeeHelp.dataset.dismissed = 'true';
+        }
+    });
+    window.addEventListener('resize', positionLateFeeTooltip);
+
+    let activeTrustTrigger = null;
+    let activeTrustTooltip = null;
+    let trustTooltipCloseTimer;
+    function positionTrustTooltip() {
+        if (!activeTrustTrigger || !activeTrustTooltip) return;
+        const triggerBounds = activeTrustTrigger.getBoundingClientRect();
+        const width = activeTrustTooltip.offsetWidth;
+        const height = activeTrustTooltip.offsetHeight;
+        const viewportWidth = document.documentElement.clientWidth;
+        const viewportHeight = window.innerHeight;
+        const left = Math.max(12, Math.min(triggerBounds.right - width, viewportWidth - width - 12));
+        const below = triggerBounds.bottom + 8;
+        const top = below + height <= viewportHeight - 12 ? below : Math.max(12, triggerBounds.top - height - 8);
+        activeTrustTooltip.style.left = `${left}px`;
+        activeTrustTooltip.style.top = `${top}px`;
+    }
+    function hideTrustTooltip() {
+        window.clearTimeout(trustTooltipCloseTimer);
+        if (activeTrustTooltip) delete activeTrustTooltip.dataset.open;
+        activeTrustTrigger = null;
+        activeTrustTooltip = null;
+    }
+    function showTrustTooltip(trigger) {
+        window.clearTimeout(trustTooltipCloseTimer);
+        if (activeTrustTrigger !== trigger) hideTrustTooltip();
+        activeTrustTrigger = trigger;
+        activeTrustTooltip = document.getElementById(trigger.getAttribute('aria-describedby'));
+        if (!activeTrustTooltip) return;
+        positionTrustTooltip();
+        activeTrustTooltip.dataset.open = 'true';
+    }
+    function scheduleTrustTooltipClose() {
+        window.clearTimeout(trustTooltipCloseTimer);
+        trustTooltipCloseTimer = window.setTimeout(() => {
+            if (!activeTrustTrigger?.matches(':hover, :focus') && !activeTrustTooltip?.matches(':hover')) {
+                hideTrustTooltip();
+            }
+        }, 120);
+    }
+    document.querySelectorAll('.trust-score-trigger').forEach(trigger => {
+        const tooltip = document.getElementById(trigger.getAttribute('aria-describedby'));
+        trigger.addEventListener('mouseenter', () => showTrustTooltip(trigger));
+        trigger.addEventListener('focus', () => showTrustTooltip(trigger));
+        trigger.addEventListener('click', () => { trigger.focus(); showTrustTooltip(trigger); });
+        trigger.addEventListener('mouseleave', scheduleTrustTooltipClose);
+        trigger.addEventListener('blur', scheduleTrustTooltipClose);
+        tooltip?.addEventListener('mouseenter', () => window.clearTimeout(trustTooltipCloseTimer));
+        tooltip?.addEventListener('mouseleave', scheduleTrustTooltipClose);
+    });
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') hideTrustTooltip();
+    });
+    document.addEventListener('pointerdown', event => {
+        if (!activeTrustTrigger?.contains(event.target) && !activeTrustTooltip?.contains(event.target)) {
+            hideTrustTooltip();
+        }
+    });
+    window.addEventListener('resize', positionTrustTooltip);
+    window.addEventListener('scroll', positionTrustTooltip, true);
+    document.getElementById('member-filter')?.addEventListener('change', hideTrustTooltip);
+
     const requestsDialog = document.getElementById('join-requests-dialog');
     if (requestsDialog) requestsDialog.showModal();
     requestsDialog?.querySelectorAll('[data-close-requests]').forEach(button => {

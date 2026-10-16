@@ -788,6 +788,28 @@ a {
     box-shadow: 0 0 0 2px rgba(150, 48, 68, 0.08);
 }
 
+.create-form #contribution_amount {
+    appearance: textfield;
+    -moz-appearance: textfield;
+}
+
+.create-form #contribution_amount::-webkit-inner-spin-button,
+.create-form #contribution_amount::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.create-form #late_fee_rate {
+    appearance: textfield;
+    -moz-appearance: textfield;
+}
+
+.create-form #late_fee_rate::-webkit-inner-spin-button,
+.create-form #late_fee_rate::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
 .field-group select.filter-style-select {
     width: 100%;
     min-width: 0;
@@ -811,6 +833,11 @@ a {
 .field-group select.filter-style-select:focus {
     border-color: #963044;
     box-shadow: 0 0 0 3px rgba(150, 48, 68, 0.08);
+}
+
+.create-form #payment_frequency {
+    font-size: 18px;
+    font-weight: 400;
 }
 
 .mini-grid {
