@@ -1,3 +1,10 @@
+-- Canonical database setup for TOKAV2. Import this file only; no separate
+-- migration scripts are required.
+-- Includes cycle claim approval, user full names, expanded group options,
+-- and freeze poll membership/outcome tracking.
+-- This is a fresh-install/reset script: importing it replaces the tables
+-- and their data with the schema and seed data below.
+
 CREATE DATABASE IF NOT EXISTS toka_db
   CHARACTER SET utf8mb4
   COLLATE utf8mb4_unicode_ci;
@@ -9,10 +16,12 @@ USE toka_db;
 -- PALUWAGAN_GROUP -> paluwagan_groups
 -- GROUP_PAYMENT_CHANNEL -> group_payment_channels
 -- GROUP_MEMBER -> group_members
+-- JOIN_REQUEST -> join_requests
 -- ROUND_SCHEDULE -> round_schedules
 -- PAYMENT -> payments
 -- FREEZE_POLL -> freeze_polls
 -- POLL_VOTE -> poll_votes
+-- FREEZE_POLL_MEMBER -> freeze_poll_members
 -- AUDIT_LOG -> audit_logs
 
 SET FOREIGN_KEY_CHECKS = 0;
@@ -306,5 +315,15 @@ INSERT INTO poll_votes (poll_id, user_id, vote_choice) VALUES
 (2, 2, 'Yes'),
 (2, 3, 'Yes')
 ON DUPLICATE KEY UPDATE vote_choice=VALUES(vote_choice);
+
+-- Preserve the freeze poll membership backfill from the consolidated migration.
+-- This also covers any active polls and memberships added to the seed data.
+INSERT IGNORE INTO freeze_poll_members (poll_id, user_id)
+SELECT fp.poll_id, gm.user_id
+FROM freeze_polls fp
+JOIN paluwagan_groups pg ON pg.group_id = fp.group_id
+JOIN group_members gm ON gm.group_id = fp.group_id
+WHERE fp.poll_status = 'Active'
+  AND pg.group_status = 'Active';
 
 
