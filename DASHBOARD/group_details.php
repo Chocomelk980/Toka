@@ -1,6 +1,9 @@
 <?php
 session_start();
+require_once __DIR__ . '/../LOGIN_PAGE/access.php';
+tokaRequireRole();
 require_once __DIR__ . '/../LOGIN_PAGE/dbconnect.php';
+require_once __DIR__ . '/cycle_helpers.php';
 
 if (!isset($_SESSION['user']) || (int) ($_SESSION['user']['user_id'] ?? 0) < 1) {
     header('Location: ../LOGIN_PAGE/index.php');
@@ -95,7 +98,7 @@ if ($group && isset($_GET['export']) && $_GET['export'] === 'csv') {
         ['Schedule', 'Frequency', $group['payment_frequency']],
         ['Schedule', 'First Payment Due', $group['first_payment_due']],
         ['Fees', 'Late Fee', $group['late_fee_rate']],
-        ['Fees', 'Grace Period Hours', $group['grace_period_hours']],
+        ['Fees', 'Grace Period Hours', tokaCycleGraceHours()],
         ['Rules', 'Description', $group['description_rules'] ?? ''],
     ] as $row) {
         fputcsv($output, array_map('detailsCsv', $row));
@@ -140,22 +143,25 @@ $statusClass = strtolower(preg_replace('/[^a-z]+/i', '-', (string) ($group['grou
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= $group ? detailsH($group['group_name']) . ' Details - Toka' : 'Group Details - Toka' ?></title>
-    <link rel="stylesheet" href="group_views.css">
+    <link rel="stylesheet" href="group_views.css?v=<?= filemtime(__DIR__ . '/group_views.css') ?>">
+    <link rel="stylesheet" href="../assets/typography.css?v=<?= filemtime(__DIR__ . '/../assets/typography.css') ?>">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="icon" type="image/svg+xml" href="../assets/toka_icon.svg">
 </head>
 <body>
 <div class="views-layout">
     <aside class="views-sidebar">
         <a class="views-brand" href="my_groups.php" aria-label="Toka home"><img src="../assets/Toka.svg" alt="Toka"></a>
         <nav class="views-nav" aria-label="Main navigation">
-            <a href="my_groups.php"><span>♟</span> My Groups</a>
+            <a href="my_groups.php"><span><i class="fa-solid fa-users" aria-hidden="true"></i></span> My Groups</a>
             <?php if ($group): ?>
-                <a class="current" href="group_dashboard.php?id=<?= (int) $groupId ?>"><span>⌂</span> Dashboard</a>
+                <a class="current" href="group_dashboard.php?id=<?= (int) $groupId ?>"><span><i class="fa-solid fa-border-all" aria-hidden="true"></i></span> Dashboard</a>
             <?php endif; ?>
         </nav>
         <div class="views-profile">
             <span class="views-avatar"><?= detailsH(strtoupper(substr($username, 0, 1))) ?></span>
             <span><?= detailsH($username) ?></span>
-            <a href="../LOGIN_PAGE/logout.php" aria-label="Log out">⇥</a>
+            <a href="../LOGIN_PAGE/logout.php" aria-label="Log out" title="Log out"><i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i></a>
         </div>
     </aside>
     <main class="views-main">
@@ -192,6 +198,7 @@ $statusClass = strtolower(preg_replace('/[^a-z]+/i', '-', (string) ($group['grou
                     <div class="metric-column">
                         <div><span>Frequency</span><strong><?= detailsH($group['payment_frequency']) ?></strong></div>
                         <div><span>Projected Cycle</span><strong><?= detailsH($cycle) ?></strong></div>
+                        <div><span>Payment Grace Period</span><strong><?= tokaCycleGraceHours() / 24 ?> days</strong></div>
                         <div><span>Late Fee</span><strong>₱<?= detailsH(number_format((float) $group['late_fee_rate'], 2)) ?> per missed day</strong></div>
                     </div>
                 </section>
@@ -265,5 +272,6 @@ $statusClass = strtolower(preg_replace('/[^a-z]+/i', '-', (string) ($group['grou
         }
     });
 </script>
+<script src="../LOGIN_PAGE/tab-auth.js?v=<?= filemtime(__DIR__ . '/../LOGIN_PAGE/tab-auth.js') ?>"></script>
 </body>
 </html>

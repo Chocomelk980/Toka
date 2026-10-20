@@ -1,5 +1,7 @@
 <?php
 session_start();
+require_once __DIR__ . '/../LOGIN_PAGE/access.php';
+tokaRequireRole();
 require_once __DIR__ . '/../LOGIN_PAGE/dbconnect.php';
 
 if (!isset($_SESSION['user']) || (int) ($_SESSION['user']['user_id'] ?? 0) < 1) {
@@ -13,6 +15,13 @@ $groupId = filter_input(INPUT_GET, 'id', FILTER_VALIDATE_INT, ['options' => ['mi
 $group = null;
 $logs = [];
 $loadError = '';
+$logsPerPage = 10;
+$requestedPage = filter_var($_GET['page'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+$currentPage = $requestedPage === false || $requestedPage === null ? 1 : $requestedPage;
+$totalLogCount = 0;
+$totalPages = 1;
+$logOffset = 0;
+$isCsvExport = isset($_GET['export']) && $_GET['export'] === 'csv';
 
 function logH($value): string
 {
@@ -40,7 +49,7 @@ if ($groupId) {
         $group = $stmt->fetch();
 
         if ($group) {
-            $stmt = $pdo->prepare(
+            $logsQuery =
                 'SELECT al.timestamp, al.activity_type, al.details, al.verification_status,
                         rs.round_number, u.username, gm.role
                  FROM audit_logs al
@@ -48,9 +57,25 @@ if ($groupId) {
                  LEFT JOIN users u ON u.user_id = al.actor_user_id
                  LEFT JOIN group_members gm ON gm.group_id = al.group_id AND gm.user_id = al.actor_user_id
                  WHERE al.group_id = :group_id
-                 ORDER BY al.timestamp ASC, al.log_id ASC'
-            );
-            $stmt->execute([':group_id' => $groupId]);
+                 ORDER BY al.timestamp DESC, al.log_id DESC';
+
+            if ($isCsvExport) {
+                $stmt = $pdo->prepare($logsQuery);
+                $stmt->execute([':group_id' => $groupId]);
+            } else {
+                $stmt = $pdo->prepare('SELECT COUNT(*) FROM audit_logs WHERE group_id = :group_id');
+                $stmt->execute([':group_id' => $groupId]);
+                $totalLogCount = (int) $stmt->fetchColumn();
+                $totalPages = max(1, (int) ceil($totalLogCount / $logsPerPage));
+                $currentPage = min($currentPage, $totalPages);
+                $logOffset = ($currentPage - 1) * $logsPerPage;
+
+                $stmt = $pdo->prepare($logsQuery . ' LIMIT :page_size OFFSET :page_offset');
+                $stmt->bindValue(':group_id', (int) $groupId, PDO::PARAM_INT);
+                $stmt->bindValue(':page_size', $logsPerPage, PDO::PARAM_INT);
+                $stmt->bindValue(':page_offset', $logOffset, PDO::PARAM_INT);
+                $stmt->execute();
+            }
             $logs = $stmt->fetchAll();
         }
     } catch (PDOException $e) {
@@ -61,7 +86,7 @@ if ($groupId) {
 
 if (!$group && $loadError === '') http_response_code(404);
 
-if ($group && isset($_GET['export']) && $_GET['export'] === 'csv') {
+if ($group && $isCsvExport) {
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="toka-group-' . (int) $groupId . '-logs.csv"');
     $output = fopen('php://output', 'w');
@@ -93,22 +118,26 @@ if ($group && isset($_GET['export']) && $_GET['export'] === 'csv') {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= $group ? logH($group['group_name']) . ' Logs - Toka' : 'Group Logs - Toka' ?></title>
-    <link rel="stylesheet" href="group_views.css">
+    <link rel="stylesheet" href="group_views.css?v=<?= filemtime(__DIR__ . '/group_views.css') ?>">
+    <link rel="stylesheet" href="pagination.css?v=<?= filemtime(__DIR__ . '/pagination.css') ?>">
+    <link rel="stylesheet" href="../assets/typography.css?v=<?= filemtime(__DIR__ . '/../assets/typography.css') ?>">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="icon" type="image/svg+xml" href="../assets/toka_icon.svg">
 </head>
 <body>
 <div class="views-layout">
     <aside class="views-sidebar">
         <a class="views-brand" href="my_groups.php" aria-label="Toka home"><img src="../assets/Toka.svg" alt="Toka"></a>
         <nav class="views-nav" aria-label="Main navigation">
-            <a href="my_groups.php"><span>♟</span> My Groups</a>
+            <a href="my_groups.php"><span><i class="fa-solid fa-users" aria-hidden="true"></i></span> My Groups</a>
             <?php if ($group): ?>
-                <a class="current" href="group_dashboard.php?id=<?= (int) $groupId ?>"><span>⌂</span> Dashboard</a>
+                <a class="current" href="group_dashboard.php?id=<?= (int) $groupId ?>"><span><i class="fa-solid fa-border-all" aria-hidden="true"></i></span> Dashboard</a>
             <?php endif; ?>
         </nav>
         <div class="views-profile">
             <span class="views-avatar"><?= logH(strtoupper(substr($username, 0, 1))) ?></span>
             <span><?= logH($username) ?></span>
-            <a href="../LOGIN_PAGE/logout.php" aria-label="Log out">⇥</a>
+            <a href="../LOGIN_PAGE/logout.php" aria-label="Log out" title="Log out"><i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i></a>
         </div>
     </aside>
     <main class="views-main">
@@ -162,6 +191,48 @@ if ($group && isset($_GET['export']) && $_GET['export'] === 'csv') {
                     </table>
                 </div>
             </section>
+            <?php if ($totalPages > 1): ?>
+                <nav class="logs-pagination" aria-label="Log pages">
+                    <span class="pagination-summary">
+                        Showing <?= $logOffset + 1 ?>–<?= min($logOffset + $logsPerPage, $totalLogCount) ?> of <?= $totalLogCount ?> records
+                    </span>
+                    <div class="pagination-controls">
+                        <?php if ($currentPage > 1): ?>
+                            <a class="page-control page-arrow" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $currentPage - 1 ?>" rel="prev" aria-label="Previous page"><span aria-hidden="true">&#8249;</span></a>
+                        <?php else: ?>
+                            <button class="page-control page-arrow" type="button" aria-label="Previous page" disabled><span aria-hidden="true">&#8249;</span></button>
+                        <?php endif; ?>
+                        <?php
+                        $pageNumbers = $totalPages <= 7
+                            ? range(1, $totalPages)
+                            : array_merge(
+                                [1],
+                                range(max(2, min($currentPage - 1, $totalPages - 2)), min($totalPages - 1, max($currentPage + 1, 3))),
+                                [$totalPages]
+                            );
+                        $previousPageNumber = 0;
+                        ?>
+                        <?php foreach ($pageNumbers as $pageNumber): ?>
+                            <?php if ($pageNumber - $previousPageNumber === 2): ?>
+                                <a class="page-control" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $previousPageNumber + 1 ?>" aria-label="Page <?= $previousPageNumber + 1 ?>"><?= $previousPageNumber + 1 ?></a>
+                            <?php elseif ($pageNumber - $previousPageNumber > 2): ?>
+                                <span class="page-ellipsis" aria-hidden="true">&hellip;</span>
+                            <?php endif; ?>
+                            <?php if ($pageNumber === $currentPage): ?>
+                                <span class="page-control" aria-current="page" aria-label="Page <?= $pageNumber ?>"><?= $pageNumber ?></span>
+                            <?php else: ?>
+                                <a class="page-control" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $pageNumber ?>" aria-label="Page <?= $pageNumber ?>"><?= $pageNumber ?></a>
+                            <?php endif; ?>
+                            <?php $previousPageNumber = $pageNumber; ?>
+                        <?php endforeach; ?>
+                        <?php if ($currentPage < $totalPages): ?>
+                            <a class="page-control page-arrow" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $currentPage + 1 ?>" rel="next" aria-label="Next page"><span aria-hidden="true">&#8250;</span></a>
+                        <?php else: ?>
+                            <button class="page-control page-arrow" type="button" aria-label="Next page" disabled><span aria-hidden="true">&#8250;</span></button>
+                        <?php endif; ?>
+                    </div>
+                </nav>
+            <?php endif; ?>
             <div class="views-actions">
                 <a class="views-secondary" href="group_dashboard.php?id=<?= (int) $groupId ?>">Back</a>
                 <a class="views-primary" href="group_logs.php?id=<?= (int) $groupId ?>&amp;export=csv">Export CSV</a>
@@ -169,5 +240,6 @@ if ($group && isset($_GET['export']) && $_GET['export'] === 'csv') {
         <?php endif; ?>
     </main>
 </div>
+<script src="../LOGIN_PAGE/tab-auth.js?v=<?= filemtime(__DIR__ . '/../LOGIN_PAGE/tab-auth.js') ?>"></script>
 </body>
 </html>
