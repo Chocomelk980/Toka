@@ -213,7 +213,7 @@ a { color: inherit; text-decoration: none; }
 .member-card:nth-child(odd) { border-right: 1px solid #f0cad2; }
 .member-card.card-odd { border-right: 1px solid #f0cad2; }
 .member-card.card-even { border-right: none; }
-.member-card:nth-last-child(-n+2) { border-bottom: 0; }
+.member-card:nth-last-of-type(-n+2) { border-bottom: 0; }
 .member-card[hidden] { display: none; }
 .empty-member-filter { grid-column: 1 / -1; padding: 36px 20px; text-align: center; color: #956873; font-size: 14px; font-weight: 500; }
 .member-left { display: flex; min-width: 0; align-items: flex-start; gap: 12px; }
@@ -327,6 +327,9 @@ a { color: inherit; text-decoration: none; }
 .freeze-reason-field small { color: #918189; font-size: 11px; font-weight: 400; }
 .payment-dialog { width: min(400px, calc(100vw - 28px)); padding: 24px 26px 22px; border-radius: 14px; border: 1px solid #efb1b8; }
 .payment-dialog h2 { margin: 0 0 18px; color: #241a1d; font-size: 18px; line-height: 1.35; text-align: center; }
+.submitted-action-dialog { width: min(300px, calc(100vw - 28px)); padding: 22px 24px; text-align: center; }
+.submitted-action-dialog h2 { margin: 0; color: #241a1d; font-size: 17px; line-height: 1.35; }
+.submitted-action-dialog .payment-dialog-actions { margin-top: 18px; }
 .payment-form { display: grid; gap: 12px; }
 .payment-form label { display: grid; gap: 6px; color: #3f3337; font-size: 12px; font-weight: 600; }
 .payment-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }

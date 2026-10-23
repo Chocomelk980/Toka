@@ -23,7 +23,9 @@
         nav.className = 'admin-pagination';
         nav.setAttribute('aria-label', label);
         nav.hidden = true;
-        anchor.after(nav);
+        const panelHeading = anchor.closest('.admin-panel')?.querySelector('.audit-heading, .panel-heading');
+        if (panelHeading) panelHeading.append(nav);
+        else anchor.before(nav);
         return nav;
     }
 
@@ -37,10 +39,10 @@
         return { currentPage, pageCount, startIndex, endIndex };
     }
 
-    function renderPagination(nav, page, onChange) {
+    function renderPagination(nav, page, onChange, { showSinglePage = false, maxPageNumbers = 7 } = {}) {
         if (!nav) return;
         const { currentPage, pageCount } = page;
-        nav.hidden = pageCount <= 1;
+        nav.hidden = !showSinglePage && pageCount <= 1;
         let controls = nav.querySelector('.pagination-controls');
         let status = nav.querySelector('.sr-only');
         if (!controls) {
@@ -55,7 +57,7 @@
         }
         status.textContent = `Page ${currentPage} of ${pageCount || 1}`;
         controls.replaceChildren();
-        if (pageCount <= 1) return;
+        if (!showSinglePage && pageCount <= 1) return;
 
         function addButton(destination, text, key, disabled = false) {
             const button = document.createElement('button');
@@ -87,8 +89,13 @@
 
         addButton(currentPage - 1, '‹', 'prev', currentPage <= 1);
         const pageNumbers = [];
-        if (pageCount <= 7) {
+        if (pageCount === 0) {
+            pageNumbers.push(1);
+        } else if (pageCount <= maxPageNumbers) {
             for (let number = 1; number <= pageCount; number++) pageNumbers.push(number);
+        } else if (maxPageNumbers === 6) {
+            const start = Math.max(1, Math.min(currentPage - 2, pageCount - maxPageNumbers + 1));
+            for (let number = start; number < start + maxPageNumbers; number++) pageNumbers.push(number);
         } else {
             pageNumbers.push(1);
             const start = Math.max(2, Math.min(currentPage - 1, pageCount - 2));
@@ -119,7 +126,7 @@
         const nav = createPaginationNav(anchor, label);
         function render(requestedPage) {
             const page = paginateRows(rows, rows, requestedPage);
-            renderPagination(nav, page, render);
+            renderPagination(nav, page, render, { showSinglePage: true, maxPageNumbers: 6 });
         }
         render(1);
     }
@@ -135,7 +142,7 @@
         renderPagination(userPagination, page, requestedPage => {
             userPage = requestedPage;
             renderUsers();
-        });
+        }, { showSinglePage: true, maxPageNumbers: 6 });
         const usersEmpty = byId('users-empty');
         if (usersEmpty) usersEmpty.hidden = visibleCount > 0;
         const bannedCount = userRows.filter(row => row.dataset.status === 'Banned').length;

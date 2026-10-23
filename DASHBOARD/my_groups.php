@@ -480,7 +480,7 @@ foreach ($groups as $group) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Toka - My Groups</title>
+    <title>Toka - Dashboard</title>
     <link rel="stylesheet" href="dashboard.css?v=<?= filemtime(__DIR__ . '/dashboard.css') ?>">
     <link rel="stylesheet" href="../assets/typography.css?v=<?= filemtime(__DIR__ . '/../assets/typography.css') ?>">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -496,13 +496,13 @@ foreach ($groups as $group) {
 
                 <nav class="nav">
                     <a href="my_groups.php" class="nav-item active">
-                        <span class="nav-icon"><i class="fa-solid fa-users"></i></span>
-                        <span>My Groups</span>
+                        <span class="nav-icon"><i class="fa-solid fa-border-all"></i></span>
+                        <span>Dashboard</span>
                     </a>
 
                     <a href="#" class="nav-item" style="color: #c7c7c7;">
-                        <span class="nav-icon"><i class="fa-solid fa-border-all"></i></span>
-                        <span>Dashboard</span>
+                        <span class="nav-icon"><i class="fa-solid fa-users"></i></span>
+                        <span>My Groups</span>
                     </a>
                 </nav>
             </div>
@@ -524,7 +524,7 @@ foreach ($groups as $group) {
         <main class="main">
             <section class="page-header">
                 <div>
-                    <h1>My Groups</h1>
+                    <h1>Dashboard</h1>
                     <p>Manage and track all your Toka groups</p>
                 </div>
 
@@ -562,31 +562,25 @@ foreach ($groups as $group) {
                 </section>
             <?php elseif ($groups): ?>
                 <section class="summary-grid">
-                    <div class="summary-card active-card">
+                    <button type="button" class="summary-card active-card" data-status="Active" aria-pressed="<?= $selectedTab === 'Active' ? 'true' : 'false' ?>">
                         <div class="summary-number"><?= $activeCount ?></div>
                         <div class="summary-text">Active Groups</div>
-                    </div>
+                    </button>
 
-                    <div class="summary-card waiting-card">
+                    <button type="button" class="summary-card waiting-card" data-status="Waiting" aria-pressed="<?= $selectedTab === 'Waiting' ? 'true' : 'false' ?>">
                         <div class="summary-number"><?= $waitingCount ?></div>
                         <div class="summary-text">Waiting Groups</div>
-                    </div>
+                    </button>
 
-                    <div class="summary-card completed-card">
+                    <button type="button" class="summary-card completed-card" data-status="Completed" aria-pressed="<?= $selectedTab === 'Completed' ? 'true' : 'false' ?>">
                         <div class="summary-number"><?= $completedCount ?></div>
                         <div class="summary-text">Completed Groups</div>
-                    </div>
-                </section>
-
-                <section class="tabs">
-                    <button type="button" class="tab<?= $selectedTab === 'Active' ? ' active' : '' ?>" data-status="Active">Active</button>
-                    <button type="button" class="tab<?= $selectedTab === 'Waiting' ? ' active' : '' ?>" data-status="Waiting">Waiting</button>
-                    <button type="button" class="tab<?= $selectedTab === 'Completed' ? ' active' : '' ?>" data-status="Completed">Completed</button>
+                    </button>
                 </section>
 
                 <section class="group-list">
                     <?php foreach ($groups as $group): ?>
-                        <article class="group-card" data-status="<?= htmlspecialchars($group['status']) ?>"<?= $group['status'] !== $selectedTab ? ' style="display: none;"' : '' ?>>
+                        <article class="group-card" data-status="<?= htmlspecialchars($group['status']) ?>"<?= $group['status'] !== $selectedTab ? ' style="display: none;"' : '' ?><?= $group['status'] === 'Active' ? ' data-group-url="group_dashboard.php?id=' . (int) $group['group_id'] . '" role="link" tabindex="0" aria-label="' . htmlspecialchars('Open group ' . $group['name'], ENT_QUOTES, 'UTF-8') . '"' : '' ?>>
                             <div class="group-info">
                                 <div class="group-heading">
                                     <h2><?= htmlspecialchars($group['name']) ?></h2>
@@ -615,58 +609,60 @@ foreach ($groups as $group) {
                             </div>
                         </div>
 
-                        <div class="group-action">
-                            <?php $canStartGroup = $group['viewer_role'] === 'Main Operator'
-                                && $group['status'] === 'Waiting'
-                                && (int) $group['members'] === (int) $group['capacity']
-                                && $group['has_co_op']
-                                && (int) $group['cycle_rounds'] === 0; ?>
-                            <?php if ($canStartGroup): ?>
-                                <form method="post" action="my_groups.php?tab=Waiting" class="start-group-form">
-                                    <input type="hidden" name="join_form_token" value="<?= htmlspecialchars($joinToken) ?>">
-                                    <input type="hidden" name="join_action" value="start_group">
-                                    <input type="hidden" name="group_id" value="<?= (int) $group['group_id'] ?>">
-                                    <button type="submit" class="view-button start-button">Start</button>
-                                </form>
-                            <?php else: ?>
-                                <a href="group_dashboard.php?id=<?= (int) $group['group_id'] ?>" class="view-button">View Group</a>
-                            <?php endif; ?>
-                            <?php if (!$canStartGroup && $group['viewer_role'] === 'Main Operator'
-                                && !$group['has_co_op']
-                                && $group['group_status'] === 'Waiting'
-                                && (int) $group['cycle_rounds'] === 0): ?>
-                                <?php if ((int) $group['members'] < (int) $group['capacity']): ?>
-                                    <button type="button" class="coop-select-button coop-waiting-button" disabled title="Available when every group slot is filled">Waiting</button>
+                        <?php if ($group['status'] !== 'Active'): ?>
+                            <div class="group-action">
+                                <?php $canStartGroup = $group['viewer_role'] === 'Main Operator'
+                                    && $group['status'] === 'Waiting'
+                                    && (int) $group['members'] === (int) $group['capacity']
+                                    && $group['has_co_op']
+                                    && (int) $group['cycle_rounds'] === 0; ?>
+                                <?php if ($canStartGroup): ?>
+                                    <form method="post" action="my_groups.php?tab=Waiting" class="start-group-form">
+                                        <input type="hidden" name="join_form_token" value="<?= htmlspecialchars($joinToken) ?>">
+                                        <input type="hidden" name="join_action" value="start_group">
+                                        <input type="hidden" name="group_id" value="<?= (int) $group['group_id'] ?>">
+                                        <button type="submit" class="view-button start-button">Start</button>
+                                    </form>
                                 <?php else: ?>
-                                    <?php $coopDialogId = 'select-coop-' . (int) $group['group_id']; ?>
-                                    <button type="button" class="coop-select-button" data-open-coop="<?= htmlspecialchars($coopDialogId) ?>">Select Co-op</button>
-                                    <dialog class="coop-dialog" id="<?= htmlspecialchars($coopDialogId) ?>">
-                                        <h2>Ready to select<br>Co-operator?</h2>
-                                        <form method="post" action="my_groups.php">
-                                            <input type="hidden" name="join_form_token" value="<?= htmlspecialchars($joinToken) ?>">
-                                            <input type="hidden" name="join_action" value="assign_coop">
-                                            <input type="hidden" name="group_id" value="<?= (int) $group['group_id'] ?>">
-                                            <label for="coop-member-<?= (int) $group['group_id'] ?>">Choose from Members</label>
-                                            <select id="coop-member-<?= (int) $group['group_id'] ?>" name="coop_user_id" required <?= empty($coopCandidatesByGroup[(int) $group['group_id']]) ? 'disabled' : '' ?>>
-                                                <?php if (empty($coopCandidatesByGroup[(int) $group['group_id']])): ?>
-                                                    <option value="" selected>No members available</option>
-                                                <?php else: ?>
-                                                    <option value="" selected disabled>Choose a member</option>
-                                                    <?php foreach ($coopCandidatesByGroup[(int) $group['group_id']] as $candidate): ?>
-                                                        <option value="<?= (int) $candidate['user_id'] ?>"><?= htmlspecialchars($candidate['username']) ?></option>
-                                                    <?php endforeach; ?>
-                                                <?php endif; ?>
-                                            </select>
-                                            <p class="coop-note">NOTE: You cannot change your Co-operator once the cycle starts.</p>
-                                            <div class="coop-modal-actions">
-                                                <button type="button" class="coop-back-button" data-close-coop>Back</button>
-                                                <button type="submit" class="coop-confirm-button" <?= empty($coopCandidatesByGroup[(int) $group['group_id']]) ? 'disabled' : '' ?>>Confirm</button>
-                                            </div>
-                                        </form>
-                                    </dialog>
+                                    <a href="group_dashboard.php?id=<?= (int) $group['group_id'] ?>" class="view-button">View Group</a>
                                 <?php endif; ?>
-                            <?php endif; ?>
-                        </div>
+                                <?php if (!$canStartGroup && $group['viewer_role'] === 'Main Operator'
+                                    && !$group['has_co_op']
+                                    && $group['group_status'] === 'Waiting'
+                                    && (int) $group['cycle_rounds'] === 0): ?>
+                                    <?php if ((int) $group['members'] < (int) $group['capacity']): ?>
+                                        <button type="button" class="coop-select-button coop-waiting-button" disabled title="Available when every group slot is filled">Waiting</button>
+                                    <?php else: ?>
+                                        <?php $coopDialogId = 'select-coop-' . (int) $group['group_id']; ?>
+                                        <button type="button" class="coop-select-button" data-open-coop="<?= htmlspecialchars($coopDialogId) ?>">Select Co-op</button>
+                                        <dialog class="coop-dialog" id="<?= htmlspecialchars($coopDialogId) ?>">
+                                            <h2>Ready to select<br>Co-operator?</h2>
+                                            <form method="post" action="my_groups.php">
+                                                <input type="hidden" name="join_form_token" value="<?= htmlspecialchars($joinToken) ?>">
+                                                <input type="hidden" name="join_action" value="assign_coop">
+                                                <input type="hidden" name="group_id" value="<?= (int) $group['group_id'] ?>">
+                                                <label for="coop-member-<?= (int) $group['group_id'] ?>">Choose from Members</label>
+                                                <select id="coop-member-<?= (int) $group['group_id'] ?>" name="coop_user_id" required <?= empty($coopCandidatesByGroup[(int) $group['group_id']]) ? 'disabled' : '' ?>>
+                                                    <?php if (empty($coopCandidatesByGroup[(int) $group['group_id']])): ?>
+                                                        <option value="" selected>No members available</option>
+                                                    <?php else: ?>
+                                                        <option value="" selected disabled>Choose a member</option>
+                                                        <?php foreach ($coopCandidatesByGroup[(int) $group['group_id']] as $candidate): ?>
+                                                            <option value="<?= (int) $candidate['user_id'] ?>"><?= htmlspecialchars($candidate['username']) ?></option>
+                                                        <?php endforeach; ?>
+                                                    <?php endif; ?>
+                                                </select>
+                                                <p class="coop-note">NOTE: You cannot change your Co-operator once the cycle starts.</p>
+                                                <div class="coop-modal-actions">
+                                                    <button type="button" class="coop-back-button" data-close-coop>Back</button>
+                                                    <button type="submit" class="coop-confirm-button" <?= empty($coopCandidatesByGroup[(int) $group['group_id']]) ? 'disabled' : '' ?>>Confirm</button>
+                                                </div>
+                                            </form>
+                                        </dialog>
+                                    <?php endif; ?>
+                                <?php endif; ?>
+                            </div>
+                        <?php endif; ?>
                     </article>
                 <?php endforeach; ?>
                 </section>
@@ -765,18 +761,26 @@ foreach ($groups as $group) {
             }
         });
 
-        const tabs = document.querySelectorAll(".tab");
+        const summaryCards = document.querySelectorAll(".summary-card");
         const cards = document.querySelectorAll(".group-card");
 
-        tabs.forEach(tab => {
-            tab.addEventListener("click", function () {
-                if (this.classList.contains("active")) return;
+        document.querySelectorAll(".group-card[data-group-url]").forEach(groupCard => {
+            groupCard.addEventListener("click", event => {
+                if (event.target.closest("a, button, input, select, textarea, dialog")) return;
+                window.location.href = groupCard.dataset.groupUrl;
+            });
+            groupCard.addEventListener("keydown", event => {
+                if (event.key === "Enter") {
+                    event.preventDefault();
+                    window.location.href = groupCard.dataset.groupUrl;
+                }
+            });
+        });
 
-                // Switch active tab indicator
-                tabs.forEach(item => item.classList.remove("active"));
-                this.classList.add("active");
-
+        summaryCards.forEach(summaryCard => {
+            summaryCard.addEventListener("click", function () {
                 const selectedStatus = this.dataset.status;
+                summaryCards.forEach(item => item.setAttribute("aria-pressed", String(item === this)));
 
                 // Animate matching cards into view
                 cards.forEach(card => {

@@ -514,11 +514,11 @@ $statusClass = strtolower(preg_replace('/[^a-z]+/i', '-', $status));
 
         <nav class="side-nav" aria-label="Main navigation">
 
-            <a href="my_groups.php"><span class="nav-symbol">▦</span> My Groups</a>
+            <a href="my_groups.php"><span class="nav-symbol"><i class="fa-solid fa-border-all" aria-hidden="true"></i></span> Dashboard</a>
 
             <?php if ($group): ?>
 
-                <a href="group_dashboard.php?id=<?= (int) $groupId ?>"><span class="nav-symbol">⌂</span> Group overview</a>
+                <a href="group_dashboard.php?id=<?= (int) $groupId ?>"><span class="nav-symbol"><i class="fa-solid fa-users" aria-hidden="true"></i></span> My Groups</a>
 
                 <a class="selected" href="group_management.php?id=<?= (int) $groupId ?>"><span class="nav-symbol">⚙</span> Management</a>
 

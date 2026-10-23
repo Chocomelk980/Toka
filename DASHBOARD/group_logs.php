@@ -129,9 +129,9 @@ if ($group && $isCsvExport) {
     <aside class="views-sidebar">
         <a class="views-brand" href="my_groups.php" aria-label="Toka home"><img src="../assets/Toka.svg" alt="Toka"></a>
         <nav class="views-nav" aria-label="Main navigation">
-            <a href="my_groups.php"><span><i class="fa-solid fa-users" aria-hidden="true"></i></span> My Groups</a>
+            <a href="my_groups.php"><span><i class="fa-solid fa-border-all" aria-hidden="true"></i></span> Dashboard</a>
             <?php if ($group): ?>
-                <a class="current" href="group_dashboard.php?id=<?= (int) $groupId ?>"><span><i class="fa-solid fa-border-all" aria-hidden="true"></i></span> Dashboard</a>
+                <a class="current" href="group_dashboard.php?id=<?= (int) $groupId ?>"><span><i class="fa-solid fa-users" aria-hidden="true"></i></span> My Groups</a>
             <?php endif; ?>
         </nav>
         <div class="views-profile">
@@ -150,6 +150,52 @@ if ($group && $isCsvExport) {
                 <a class="views-primary" href="my_groups.php">Back to My Groups</a>
             </section>
         <?php else: ?>
+            <div class="logs-toolbar">
+                <a class="views-secondary" href="group_dashboard.php?id=<?= (int) $groupId ?>">Back</a>
+            <?php if ($totalPages > 1): ?>
+                <nav class="logs-pagination" aria-label="Log pages">
+                    <div class="pagination-controls">
+                        <?php if ($currentPage > 1): ?>
+                            <a class="page-control page-arrow" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $currentPage - 1 ?>" rel="prev" aria-label="Previous page"><span aria-hidden="true">&#8249;</span></a>
+                        <?php else: ?>
+                            <button class="page-control page-arrow" type="button" aria-label="Previous page" disabled><span aria-hidden="true">&#8249;</span></button>
+                        <?php endif; ?>
+                        <?php
+                        $pageNumbers = $totalPages <= 7
+                            ? range(1, $totalPages)
+                            : array_merge(
+                                [1],
+                                range(max(2, min($currentPage - 1, $totalPages - 2)), min($totalPages - 1, max($currentPage + 1, 3))),
+                                [$totalPages]
+                            );
+                        $previousPageNumber = 0;
+                        ?>
+                        <?php foreach ($pageNumbers as $pageNumber): ?>
+                            <?php if ($pageNumber - $previousPageNumber === 2): ?>
+                                <a class="page-control" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $previousPageNumber + 1 ?>" aria-label="Page <?= $previousPageNumber + 1 ?>"><?= $previousPageNumber + 1 ?></a>
+                            <?php elseif ($pageNumber - $previousPageNumber > 2): ?>
+                                <span class="page-ellipsis" aria-hidden="true">&hellip;</span>
+                            <?php endif; ?>
+                            <?php if ($pageNumber === $currentPage): ?>
+                                <span class="page-control" aria-current="page" aria-label="Page <?= $pageNumber ?>"><?= $pageNumber ?></span>
+                            <?php else: ?>
+                                <a class="page-control" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $pageNumber ?>" aria-label="Page <?= $pageNumber ?>"><?= $pageNumber ?></a>
+                            <?php endif; ?>
+                            <?php $previousPageNumber = $pageNumber; ?>
+                        <?php endforeach; ?>
+                        <?php if ($currentPage < $totalPages): ?>
+                            <a class="page-control page-arrow" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $currentPage + 1 ?>" rel="next" aria-label="Next page"><span aria-hidden="true">&#8250;</span></a>
+                        <?php else: ?>
+                            <button class="page-control page-arrow" type="button" aria-label="Next page" disabled><span aria-hidden="true">&#8250;</span></button>
+                        <?php endif; ?>
+                    </div>
+                    <span class="pagination-summary">
+                        Showing <?= $logOffset + 1 ?>–<?= min($logOffset + $logsPerPage, $totalLogCount) ?> of <?= $totalLogCount ?> records
+                    </span>
+                </nav>
+            <?php endif; ?>
+                <a class="views-primary" href="group_logs.php?id=<?= (int) $groupId ?>&amp;export=csv">Export CSV</a>
+            </div>
             <section class="logs-sheet" aria-label="Group activity logs">
                 <div class="logs-scroll">
                     <table class="logs-table">
@@ -191,52 +237,6 @@ if ($group && $isCsvExport) {
                     </table>
                 </div>
             </section>
-            <?php if ($totalPages > 1): ?>
-                <nav class="logs-pagination" aria-label="Log pages">
-                    <span class="pagination-summary">
-                        Showing <?= $logOffset + 1 ?>–<?= min($logOffset + $logsPerPage, $totalLogCount) ?> of <?= $totalLogCount ?> records
-                    </span>
-                    <div class="pagination-controls">
-                        <?php if ($currentPage > 1): ?>
-                            <a class="page-control page-arrow" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $currentPage - 1 ?>" rel="prev" aria-label="Previous page"><span aria-hidden="true">&#8249;</span></a>
-                        <?php else: ?>
-                            <button class="page-control page-arrow" type="button" aria-label="Previous page" disabled><span aria-hidden="true">&#8249;</span></button>
-                        <?php endif; ?>
-                        <?php
-                        $pageNumbers = $totalPages <= 7
-                            ? range(1, $totalPages)
-                            : array_merge(
-                                [1],
-                                range(max(2, min($currentPage - 1, $totalPages - 2)), min($totalPages - 1, max($currentPage + 1, 3))),
-                                [$totalPages]
-                            );
-                        $previousPageNumber = 0;
-                        ?>
-                        <?php foreach ($pageNumbers as $pageNumber): ?>
-                            <?php if ($pageNumber - $previousPageNumber === 2): ?>
-                                <a class="page-control" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $previousPageNumber + 1 ?>" aria-label="Page <?= $previousPageNumber + 1 ?>"><?= $previousPageNumber + 1 ?></a>
-                            <?php elseif ($pageNumber - $previousPageNumber > 2): ?>
-                                <span class="page-ellipsis" aria-hidden="true">&hellip;</span>
-                            <?php endif; ?>
-                            <?php if ($pageNumber === $currentPage): ?>
-                                <span class="page-control" aria-current="page" aria-label="Page <?= $pageNumber ?>"><?= $pageNumber ?></span>
-                            <?php else: ?>
-                                <a class="page-control" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $pageNumber ?>" aria-label="Page <?= $pageNumber ?>"><?= $pageNumber ?></a>
-                            <?php endif; ?>
-                            <?php $previousPageNumber = $pageNumber; ?>
-                        <?php endforeach; ?>
-                        <?php if ($currentPage < $totalPages): ?>
-                            <a class="page-control page-arrow" href="group_logs.php?id=<?= (int) $groupId ?>&amp;page=<?= $currentPage + 1 ?>" rel="next" aria-label="Next page"><span aria-hidden="true">&#8250;</span></a>
-                        <?php else: ?>
-                            <button class="page-control page-arrow" type="button" aria-label="Next page" disabled><span aria-hidden="true">&#8250;</span></button>
-                        <?php endif; ?>
-                    </div>
-                </nav>
-            <?php endif; ?>
-            <div class="views-actions">
-                <a class="views-secondary" href="group_dashboard.php?id=<?= (int) $groupId ?>">Back</a>
-                <a class="views-primary" href="group_logs.php?id=<?= (int) $groupId ?>&amp;export=csv">Export CSV</a>
-            </div>
         <?php endif; ?>
     </main>
 </div>

@@ -153,9 +153,9 @@ $statusClass = strtolower(preg_replace('/[^a-z]+/i', '-', (string) ($group['grou
     <aside class="views-sidebar">
         <a class="views-brand" href="my_groups.php" aria-label="Toka home"><img src="../assets/Toka.svg" alt="Toka"></a>
         <nav class="views-nav" aria-label="Main navigation">
-            <a href="my_groups.php"><span><i class="fa-solid fa-users" aria-hidden="true"></i></span> My Groups</a>
+            <a href="my_groups.php"><span><i class="fa-solid fa-border-all" aria-hidden="true"></i></span> Dashboard</a>
             <?php if ($group): ?>
-                <a class="current" href="group_dashboard.php?id=<?= (int) $groupId ?>"><span><i class="fa-solid fa-border-all" aria-hidden="true"></i></span> Dashboard</a>
+                <a class="current" href="group_dashboard.php?id=<?= (int) $groupId ?>"><span><i class="fa-solid fa-users" aria-hidden="true"></i></span> My Groups</a>
             <?php endif; ?>
         </nav>
         <div class="views-profile">

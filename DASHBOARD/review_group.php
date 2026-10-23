@@ -540,9 +540,9 @@ $groupCode = $_SESSION['generated_group_code'];
 
                     <a href="my_groups.php" class="nav-item active">
 
-                        <span class="nav-icon"><i class="fa-solid fa-users" aria-hidden="true"></i></span>
+                        <span class="nav-icon"><i class="fa-solid fa-border-all" aria-hidden="true"></i></span>
 
-                        <span>My Groups</span>
+                        <span>Dashboard</span>
 
                     </a>
 
@@ -550,9 +550,9 @@ $groupCode = $_SESSION['generated_group_code'];
 
                     <a href="#" class="nav-item" style="color: #c7c7c7;">
 
-                        <span class="nav-icon"><i class="fa-solid fa-border-all" aria-hidden="true"></i></span>
+                        <span class="nav-icon"><i class="fa-solid fa-users" aria-hidden="true"></i></span>
 
-                        <span>Dashboard</span>
+                        <span>My Groups</span>
 
                     </a>
 

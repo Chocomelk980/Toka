@@ -541,7 +541,7 @@ function adminActivityKind(string $activity): string
 
             <div class="admin-columns">
                 <section class="admin-panel dispute-panel" aria-labelledby="dispute-heading">
-                    <header class="panel-heading"><h2 id="dispute-heading" tabindex="-1">Dispute Intervention Desk</h2><p>Frozen and deadlocked groups requiring admin action</p></header>
+                    <header class="panel-heading"><div><h2 id="dispute-heading" tabindex="-1">Dispute Intervention Desk</h2><p>Frozen and deadlocked groups requiring admin action</p></div></header>
                     <?php if ($disputesError !== ''): ?><p class="admin-notice" role="alert"><?= adminH($disputesError) ?></p><?php endif; ?>
                     <div class="dispute-scroll" tabindex="0" role="region" aria-label="Dispute table">
                         <table class="dispute-table">
@@ -603,8 +603,13 @@ function adminActivityKind(string $activity): string
             <section class="admin-panel audit-panel" aria-labelledby="audit-heading">
                 <header class="audit-heading">
                     <div><h2 id="audit-heading">Master System Audit Search</h2><p>Read-only global activity ledger</p></div>
-                    <label class="sr-only" for="audit-search">Search by User ID, Group Code, or Transaction Reference</label>
-                    <input id="audit-search" type="search" placeholder="Search by User ID, Group Code, or Txn Ref..." autocomplete="off" aria-controls="audit-rows" <?= $auditError !== '' ? 'disabled' : '' ?>>
+                    <div class="audit-tools">
+                        <nav id="audit-pagination" class="admin-pagination" aria-label="Audit log pages" hidden></nav>
+                        <div class="audit-search-field">
+                            <label class="sr-only" for="audit-search">Search by User ID, Group Code, or Transaction Reference</label>
+                            <input id="audit-search" type="search" placeholder="Search by User ID, Group Code, or Txn Ref..." autocomplete="off" aria-controls="audit-rows" <?= $auditError !== '' ? 'disabled' : '' ?>>
+                        </div>
+                    </div>
                 </header>
                 <?php if ($auditError !== ''): ?><p class="admin-notice" role="alert"><?= adminH($auditError) ?></p><?php endif; ?>
                 <div class="audit-scroll" tabindex="0" role="region" aria-label="Global activity ledger">
@@ -625,7 +630,6 @@ function adminActivityKind(string $activity): string
                         </tbody>
                     </table>
                 </div>
-                <nav id="audit-pagination" class="admin-pagination" aria-label="Audit log pages" hidden></nav>
                 <p id="audit-empty" class="audit-empty" role="status" <?= $auditLogs || $auditError !== '' ? 'hidden' : '' ?>><?= $auditLogs ? 'No audit activity matches your search.' : 'No audit activity has been recorded yet.' ?></p>
                 <p id="audit-count" class="sr-only" role="status" aria-live="polite"><?= $auditError !== '' ? 'Audit count unavailable.' : count($auditLogs) . ' audit records shown.' ?></p>
             </section>
@@ -721,7 +725,7 @@ function adminActivityKind(string $activity): string
                     <table class="audit-table">
                         <caption class="sr-only">Groups currently frozen on the platform and their recorded freeze details.</caption>
                         <thead><tr><th scope="col">Group Name / Group ID</th><th scope="col">Freeze Initiated By</th><th scope="col">Approval Date &amp; Time</th><th scope="col">Reason for Freezing</th></tr></thead>
-                        <tbody>
+                        <tbody data-available="<?= $frozenGroupsError === '' ? 'true' : 'false' ?>">
                             <?php foreach ($frozenGroups as $group): ?>
                                 <tr>
                                     <td class="audit-user"><?= adminH($group['group_name']) ?><small class="table-subtext">ID: <?= (int) $group['group_id'] ?> · <?= adminH($group['group_code']) ?></small></td>

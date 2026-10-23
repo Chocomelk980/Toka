@@ -23,6 +23,7 @@ $rounds = [];
 $activity = [];
 $loadError = '';
 $actionMessage = '';
+$submittedActionNotice = '';
 $currentMember = null;
 $currentRound = null;
 $memberPayments = [];
@@ -326,6 +327,21 @@ if (!$group && $loadError === '') http_response_code(404);
 
 if ($group && isset($_SESSION['group_dashboard_flash'][$groupId])) {
     $actionMessage = (string) $_SESSION['group_dashboard_flash'][$groupId];
+    if ($actionMessage === 'Payment submitted.') {
+        $submittedActionNotice = 'Payment submitted';
+    } elseif ($actionMessage === 'Pot claim submitted. It is waiting for the Main Operator to approve it.') {
+        $submittedActionNotice = 'Pot claim submitted';
+    } elseif (in_array($actionMessage, [
+        'Payment verified.',
+        'Payment approved. It is awaiting Main Operator approval.',
+    ], true)) {
+        $submittedActionNotice = $actionMessage;
+    } elseif (in_array($actionMessage, [
+        'Pot claim approved. The next round has started.',
+        'The final pot claim was approved. This group cycle is complete.',
+    ], true)) {
+        $submittedActionNotice = $actionMessage;
+    }
     unset($_SESSION['group_dashboard_flash'][$groupId]);
 }
 
@@ -621,7 +637,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $group && $loadError === '') {
                     ':verification' => 'Pending ' . $nextApprover,
                 ]);
                 $pdo->commit();
-                $_SESSION['group_dashboard_flash'][$groupId] = 'Payment submitted. It is awaiting ' . strtolower($nextApprover) . ' approval.';
+                $_SESSION['group_dashboard_flash'][$groupId] = 'Payment submitted.';
                 header('Location: group_dashboard.php?id=' . $groupId);
                 exit;
             } catch (Throwable $e) {
@@ -1069,11 +1085,11 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
         <a class="brand" href="my_groups.php" aria-label="Toka home"><img src="../assets/Toka.svg" alt="Toka"></a>
         <nav class="side-nav" aria-label="Main navigation">
             <a href="my_groups.php">
-                <span class="nav-symbol"><i class="fa-solid fa-users"></i></span> My Groups
+                <span class="nav-symbol"><i class="fa-solid fa-border-all"></i></span> Dashboard
             </a>
             <?php if ($group): ?>
                 <a class="selected" href="group_dashboard.php?id=<?= (int) $groupId ?>">
-                    <span class="nav-symbol"><i class="fa-solid fa-border-all"></i></span> Dashboard
+                    <span class="nav-symbol"><i class="fa-solid fa-users"></i></span> My Groups
                 </a>
             <?php endif; ?>
         </nav>
@@ -1176,7 +1192,7 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                 </select>
             </div>
 
-            <?php if ($actionMessage !== '' && !$openPaymentDialog): ?>
+            <?php if ($actionMessage !== '' && !$openPaymentDialog && $submittedActionNotice === ''): ?>
                 <div class="action-notice" role="alert"><?= h($actionMessage) ?></div>
             <?php endif; ?>
 
@@ -1533,6 +1549,15 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                 </dialog>
             <?php endif; ?>
 
+            <?php if ($submittedActionNotice !== ''): ?>
+                <dialog class="dashboard-dialog submitted-action-dialog" id="submitted-action-dialog" aria-labelledby="submitted-action-title">
+                    <h2 id="submitted-action-title"><?= h($submittedActionNotice) ?></h2>
+                    <div class="payment-dialog-actions">
+                        <button class="payment-confirm" type="button" data-close-submitted-action>OK</button>
+                    </div>
+                </dialog>
+            <?php endif; ?>
+
 
         <?php endif; ?>
     </main>
@@ -1642,6 +1667,12 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
     <?php if ($openPaymentDialog): ?>
         paymentDialog?.showModal();
     <?php endif; ?>
+
+    const submittedActionDialog = document.getElementById('submitted-action-dialog');
+    if (submittedActionDialog) {
+        submittedActionDialog.showModal();
+        submittedActionDialog.querySelector('[data-close-submitted-action]')?.addEventListener('click', () => submittedActionDialog.close());
+    }
 
     const paymentReviewDialog = document.getElementById('payment-review-dialog');
     document.querySelectorAll('[data-open-payment-review]').forEach(button => {

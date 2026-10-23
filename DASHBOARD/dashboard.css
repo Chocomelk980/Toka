@@ -327,6 +327,25 @@ a {
         1px
         solid
         #ddd;
+    width: 100%;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.2s ease;
+}
+
+.summary-card:hover {
+    transform: translateY(-1px);
+}
+
+.summary-card:focus-visible {
+    outline: 3px solid rgba(150, 48, 68, 0.35);
+    outline-offset: 2px;
+}
+
+.summary-card[aria-pressed="true"] {
+    box-shadow: 0 0 0 2px rgba(150, 48, 68, 0.12);
 }
 
 
@@ -387,58 +406,7 @@ a {
 }
 
 
-/* =========================
-   TABS
-========================= */
-
-.tabs {
-    margin: 0 40px 20px;
-    display: inline-flex;
-    background: #ffffff;
-    border: 1px solid #efadb5;
-    border-radius: 12px;
-    padding: 4px;
-    gap: 4px;
-    box-shadow: 0 2px 6px rgba(150, 48, 68, 0.05);
-}
-
-.tab {
-    border: none;
-    background: transparent;
-    padding: 8px 18px;
-    color: #963044;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    border-radius: 8px;
-    user-select: none;
-    outline: none;
-    /* Smooth transitions for active & hover state changes */
-    transition: background-color 0.25s ease,
-                color 0.25s ease,
-                transform 0.15s ease,
-                box-shadow 0.25s ease;
-}
-
-/* Hover state for inactive tabs */
-.tab:hover:not(.active) {
-    background: rgba(150, 48, 68, 0.08);
-    color: #7b2637;
-}
-
-/* Slight press-down effect on click */
-.tab:active {
-    transform: scale(0.96);
-}
-
-/* Active tab state */
-.tab.active {
-    background: #963044;
-    color: #ffffff;
-    box-shadow: 0 3px 10px rgba(150, 48, 68, 0.25);
-}
-
-/* Smooth fade & slide animation for group cards when switching tabs */
+/* Smooth fade & slide animation for group cards when switching filters */
 @keyframes cardFadeIn {
     from {
         opacity: 0;
@@ -504,6 +472,16 @@ a {
 
 .group-card[data-status="Completed"] {
     border-left-color: #909090;
+}
+
+.group-card[data-group-url] {
+    grid-template-columns: minmax(0, 1fr) 240px;
+    cursor: pointer;
+}
+
+.group-card[data-group-url]:focus-visible {
+    outline: 3px solid rgba(150, 48, 68, 0.35);
+    outline-offset: 2px;
 }
 
 
@@ -691,10 +669,6 @@ a {
             20px;
     }
 
-    .tabs {
-        margin-left: 20px;
-    }
-
     .group-list {
         padding:
             0
@@ -710,13 +684,14 @@ a {
 }
 
 .create-shell {
+    zoom: 0.78;
     background: rgba(255,255,255,0.96);
     border: 1px solid #e3bcc2;
     border-radius: 16px;
-    padding: 30px 26px 22px;
-    max-width: 1180px;
+    padding: 24px 26px 16px;
+    max-width: 1200px;
     width: calc(100% - 20px);
-    margin: 0 auto;
+    margin: 20px auto 0;
     box-sizing: border-box;
 }
 
@@ -846,8 +821,202 @@ a {
     gap: 16px 18px;
 }
 
+.mini-grid .field-group input,
+.mini-grid .field-group select {
+    height: 43px;
+}
+
+.datetime-control {
+    position: relative;
+    width: 100%;
+}
+
+.datetime-control .datetime-native-input {
+    padding-right: 42px;
+}
+
+.datetime-control .datetime-native-input::-webkit-calendar-picker-indicator {
+    display: none;
+}
+
+.datetime-picker-toggle {
+    position: absolute;
+    top: 50%;
+    right: 6px;
+    display: grid;
+    width: 32px;
+    height: 32px;
+    place-items: center;
+    transform: translateY(-50%);
+    border: 0;
+    border-radius: 7px;
+    color: #963044;
+    background: #fbedf0;
+    cursor: pointer;
+}
+
+.datetime-picker-toggle:hover,
+.datetime-picker-toggle[aria-expanded="true"] {
+    color: #fff;
+    background: #963044;
+}
+
+.datetime-picker-popover {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 30;
+    width: min(360px, calc(100vw - 24px));
+    padding: 12px;
+    border: 1px solid #e3bcc2;
+    border-radius: 12px;
+    color: #34282c;
+    background: #fff;
+    box-shadow: 0 12px 30px rgba(42, 17, 24, 0.18);
+}
+
+.datetime-picker-popover[hidden] {
+    display: none;
+}
+
+.datetime-picker-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+    padding-bottom: 9px;
+    border-bottom: 1px solid #f0dce0;
+}
+
+.datetime-picker-header strong {
+    color: #35252b;
+    font-size: 13px;
+}
+
+.datetime-picker-header button {
+    display: grid;
+    width: 27px;
+    height: 27px;
+    place-items: center;
+    border: 0;
+    border-radius: 7px;
+    color: #963044;
+    background: #fbedf0;
+    cursor: pointer;
+}
+
+.datetime-picker-header button:hover {
+    color: #fff;
+    background: #963044;
+}
+
+.datetime-picker-content {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 76px;
+    gap: 10px;
+}
+
+.datetime-weekdays,
+.datetime-days {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 3px;
+    text-align: center;
+}
+
+.datetime-weekdays {
+    margin-bottom: 4px;
+    color: #8d727a;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.datetime-days button {
+    min-width: 0;
+    aspect-ratio: 1;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    color: #49383e;
+    background: #fff;
+    font: inherit;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.datetime-days button:hover:not(:disabled) {
+    border-color: #e5b8c1;
+    background: #fbedf0;
+}
+
+.datetime-days button.is-today {
+    border-color: #d9a2ad;
+}
+
+.datetime-days button.is-selected,
+.datetime-days button.is-selected:hover {
+    border-color: #963044;
+    color: #fff;
+    background: #963044;
+}
+
+.datetime-days button:disabled {
+    color: #cbbdc1;
+    cursor: not-allowed;
+}
+
+.datetime-time {
+    display: grid;
+    align-content: start;
+    gap: 7px;
+    padding-left: 9px;
+    border-left: 1px solid #f0dce0;
+}
+
+.datetime-time label {
+    display: grid;
+    gap: 3px;
+    color: #8d727a;
+    font-size: 9px;
+    font-weight: 700;
+}
+
+.datetime-picker-popover .datetime-time select {
+    width: 100%;
+    height: 28px;
+    padding: 0 5px;
+    border: 1px solid #e3bcc2;
+    border-radius: 6px;
+    color: #49383e;
+    background: #fff;
+    font: inherit;
+    font-size: 10px;
+}
+
+.datetime-picker-footer {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid #f0dce0;
+}
+
+.datetime-picker-footer button {
+    min-height: 28px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 7px;
+    color: #fff;
+    background: #963044;
+    font: inherit;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
 .create-form .contribution-field label {
-    font-size: 14px;
+    font-size: 16px;
     white-space: nowrap;
 }
 
@@ -1148,9 +1317,9 @@ a {
 
 .join-dialog {
     position: fixed;
-    inset: 50% auto auto 50%;
-    transform: translate(-50%, -50%);
-    margin: 0;
+    inset: 0;
+    margin: auto;
+    transform: none;
     width: min(470px, calc(100vw - 28px));
     max-width: none;
     max-height: calc(100vh - 30px);
@@ -1211,9 +1380,9 @@ a {
 }
 .coop-dialog {
     position: fixed;
-    inset: 50% auto auto 50%;
-    transform: translate(-50%, -50%);
-    margin: 0;
+    inset: 0;
+    margin: auto;
+    transform: none;
     width: min(448px, calc(100vw - 28px));
     max-width: none;
     padding: 27px 26px 23px;

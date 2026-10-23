@@ -96,13 +96,13 @@ $username = $_SESSION['user']['username'] ?? 'User';
 
                 <nav class="nav">
                     <a href="my_groups.php" class="nav-item active">
-                        <span class="nav-icon"><i class="fa-solid fa-users" aria-hidden="true"></i></span>
-                        <span>My Groups</span>
+                        <span class="nav-icon"><i class="fa-solid fa-border-all" aria-hidden="true"></i></span>
+                        <span>Dashboard</span>
                     </a>
 
                     <a href="#" class="nav-item" style="color: #c7c7c7;">
-                        <span class="nav-icon"><i class="fa-solid fa-border-all" aria-hidden="true"></i></span>
-                        <span>Dashboard</span>
+                        <span class="nav-icon"><i class="fa-solid fa-users" aria-hidden="true"></i></span>
+                        <span>My Groups</span>
                     </a>
                 </nav>
             </div>
@@ -185,7 +185,35 @@ $username = $_SESSION['user']['username'] ?? 'User';
 
                                 <div class="field-group">
                                     <label for="first_payment_due">First Payment Due</label>
-                                    <input id="first_payment_due" name="first_payment_due" type="datetime-local" required min="1000-01-01T00:00" max="9999-12-31T23:59" value="<?= htmlspecialchars($draft['first_payment_due'] ?? '') ?>">
+                                    <div class="datetime-control">
+                                        <input id="first_payment_due" class="datetime-native-input" name="first_payment_due" type="datetime-local" required min="1000-01-01T00:00" max="9999-12-31T23:59" value="<?= htmlspecialchars($draft['first_payment_due'] ?? '') ?>">
+                                        <button type="button" class="datetime-picker-toggle" aria-label="Choose first payment date and time" aria-controls="first-payment-picker" aria-expanded="false">
+                                            <i class="fa-regular fa-calendar" aria-hidden="true"></i>
+                                        </button>
+                                        <div class="datetime-picker-popover" id="first-payment-picker" role="dialog" aria-label="Choose first payment date and time" hidden>
+                                            <div class="datetime-picker-header">
+                                                <button type="button" data-calendar-previous aria-label="Previous month"><i class="fa-solid fa-chevron-left" aria-hidden="true"></i></button>
+                                                <strong data-calendar-month></strong>
+                                                <button type="button" data-calendar-next aria-label="Next month"><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button>
+                                            </div>
+                                            <div class="datetime-picker-content">
+                                                <div class="datetime-calendar">
+                                                    <div class="datetime-weekdays" aria-hidden="true">
+                                                        <span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span>
+                                                    </div>
+                                                    <div class="datetime-days" data-calendar-days></div>
+                                                </div>
+                                                <div class="datetime-time">
+                                                    <label>Hour<select data-calendar-hour></select></label>
+                                                    <label>Minute<select data-calendar-minute></select></label>
+                                                    <label>Period<select data-calendar-period><option>AM</option><option>PM</option></select></label>
+                                                </div>
+                                            </div>
+                                            <div class="datetime-picker-footer">
+                                                <button type="button" data-calendar-done>Done</button>
+                                            </div>
+                                        </div>
+                                    </div>
                                 </div>
 
                             </div>
@@ -286,6 +314,166 @@ $username = $_SESSION['user']['username'] ?? 'User';
             }
         });
         slots.addEventListener('input', calculatePot);
+
+        const dueDateInput = document.getElementById('first_payment_due');
+        const datePickerToggle = document.querySelector('.datetime-picker-toggle');
+        const datePicker = document.getElementById('first-payment-picker');
+
+        if (dueDateInput && datePickerToggle && datePicker) {
+            const monthLabel = datePicker.querySelector('[data-calendar-month]');
+            const daysGrid = datePicker.querySelector('[data-calendar-days]');
+            const hourSelect = datePicker.querySelector('[data-calendar-hour]');
+            const minuteSelect = datePicker.querySelector('[data-calendar-minute]');
+            const periodSelect = datePicker.querySelector('[data-calendar-period]');
+            const maxDate = dueDateInput.max.slice(0, 10);
+            let viewedMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+            let selectedDate = null;
+
+            const padDatePart = value => String(value).padStart(2, '0');
+            const dateKey = date => date.getFullYear() + '-' + padDatePart(date.getMonth() + 1) + '-' + padDatePart(date.getDate());
+            let minDate = '';
+            function refreshMinDate() {
+                minDate = dateKey(new Date());
+                dueDateInput.min = minDate + 'T00:00';
+            }
+
+            const inputParts = () => {
+                const match = dueDateInput.value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+                if (!match) return null;
+                return {
+                    date: new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])),
+                    hour: Number(match[4]),
+                    minute: Number(match[5])
+                };
+            };
+
+            hourSelect.innerHTML = Array.from({ length: 12 }, (_, index) => {
+                const hour = index + 1;
+                return '<option value="' + hour + '">' + padDatePart(hour) + '</option>';
+            }).join('');
+            minuteSelect.innerHTML = Array.from({ length: 60 }, (_, minute) => {
+                return '<option value="' + minute + '">' + padDatePart(minute) + '</option>';
+            }).join('');
+
+            function setTime(hour, minute) {
+                const hour12 = hour % 12 || 12;
+                hourSelect.value = String(hour12);
+                minuteSelect.value = String(minute);
+                periodSelect.value = hour >= 12 ? 'PM' : 'AM';
+            }
+
+            function syncDateTimeValue() {
+                if (!selectedDate) return;
+                const hour12 = Number(hourSelect.value);
+                const hour24 = (hour12 % 12) + (periodSelect.value === 'PM' ? 12 : 0);
+                dueDateInput.value = dateKey(selectedDate) + 'T' + padDatePart(hour24) + ':' + padDatePart(minuteSelect.value);
+                dueDateInput.dispatchEvent(new Event('input', { bubbles: true }));
+                dueDateInput.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+
+            function renderCalendar() {
+                refreshMinDate();
+                const year = viewedMonth.getFullYear();
+                const month = viewedMonth.getMonth();
+                monthLabel.textContent = new Intl.DateTimeFormat(undefined, {
+                    month: 'long',
+                    year: 'numeric'
+                }).format(viewedMonth);
+
+                const monthKey = year + '-' + padDatePart(month + 1);
+                datePicker.querySelector('[data-calendar-previous]').disabled = monthKey <= minDate.slice(0, 7);
+                datePicker.querySelector('[data-calendar-next]').disabled = monthKey >= maxDate.slice(0, 7);
+                daysGrid.replaceChildren();
+
+                const firstWeekday = new Date(year, month, 1).getDay();
+                for (let blank = 0; blank < firstWeekday; blank++) {
+                    const spacer = document.createElement('span');
+                    spacer.setAttribute('aria-hidden', 'true');
+                    daysGrid.appendChild(spacer);
+                }
+
+                const daysInMonth = new Date(year, month + 1, 0).getDate();
+                const todayKey = dateKey(new Date());
+                for (let day = 1; day <= daysInMonth; day++) {
+                    const date = new Date(year, month, day);
+                    const key = dateKey(date);
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.textContent = String(day);
+                    button.setAttribute('aria-label', new Intl.DateTimeFormat(undefined, {
+                        dateStyle: 'full'
+                    }).format(date));
+                    button.setAttribute('aria-pressed', String(key === (selectedDate ? dateKey(selectedDate) : '')));
+                    if (key === todayKey) button.classList.add('is-today');
+                    if (selectedDate && key === dateKey(selectedDate)) button.classList.add('is-selected');
+                    button.disabled = key < minDate || key > maxDate;
+                    button.addEventListener('click', () => {
+                        selectedDate = date;
+                        syncDateTimeValue();
+                        renderCalendar();
+                    });
+                    daysGrid.appendChild(button);
+                }
+            }
+
+            function openDatePicker() {
+                refreshMinDate();
+                const parts = inputParts();
+                const now = new Date();
+                if (parts && dateKey(parts.date) >= minDate) {
+                    selectedDate = parts.date;
+                    viewedMonth = new Date(parts.date.getFullYear(), parts.date.getMonth(), 1);
+                    setTime(parts.hour, parts.minute);
+                } else {
+                    selectedDate = null;
+                    viewedMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+                    setTime(now.getHours(), now.getMinutes());
+                }
+                renderCalendar();
+                datePicker.hidden = false;
+                datePickerToggle.setAttribute('aria-expanded', 'true');
+                (daysGrid.querySelector('.is-selected') || daysGrid.querySelector('.is-today:not(:disabled)'))?.focus();
+            }
+
+            function closeDatePicker() {
+                datePicker.hidden = true;
+                datePickerToggle.setAttribute('aria-expanded', 'false');
+            }
+
+            datePickerToggle.addEventListener('click', () => {
+                if (datePicker.hidden) {
+                    openDatePicker();
+                } else {
+                    closeDatePicker();
+                }
+            });
+            datePicker.querySelector('[data-calendar-previous]').addEventListener('click', () => {
+                const previousMonth = new Date(viewedMonth.getFullYear(), viewedMonth.getMonth() - 1, 1);
+                const previousMonthKey = previousMonth.getFullYear() + '-' + padDatePart(previousMonth.getMonth() + 1);
+                if (previousMonthKey < minDate.slice(0, 7)) return;
+                viewedMonth = previousMonth;
+                renderCalendar();
+            });
+            datePicker.querySelector('[data-calendar-next]').addEventListener('click', () => {
+                viewedMonth = new Date(viewedMonth.getFullYear(), viewedMonth.getMonth() + 1, 1);
+                renderCalendar();
+            });
+            [hourSelect, minuteSelect, periodSelect].forEach(select => {
+                select.addEventListener('change', syncDateTimeValue);
+            });
+            datePicker.querySelector('[data-calendar-done]').addEventListener('click', () => {
+                closeDatePicker();
+                datePickerToggle.focus();
+            });
+            document.addEventListener('click', event => {
+                if (!datePicker.hidden && !datePicker.contains(event.target) && !datePickerToggle.contains(event.target)) {
+                    closeDatePicker();
+                }
+            });
+            document.addEventListener('keydown', event => {
+                if (event.key === 'Escape' && !datePicker.hidden) closeDatePicker();
+            });
+        }
 
         function validateField(input) {
             input.setCustomValidity('');
