@@ -15,9 +15,17 @@ if ($signedInUser && $action !== 'login' && ($action !== 'register' || $activeTa
     exit;
 }
 
-function fail(string $message, string $page, bool $banned = false, string|array|null $errorFields = null): never {
+function fail(
+    string $message,
+    string $page,
+    bool $banned = false,
+    string|array|null $errorFields = null,
+    ?string $banReason = null
+): never {
     $_SESSION['auth_error'] = $message;
     $_SESSION['auth_banned_login'] = $banned;
+    if ($banned) $_SESSION['auth_ban_reason'] = trim($banReason ?? '');
+    else unset($_SESSION['auth_ban_reason']);
     $allowedFields = ['full_name', 'username', 'email', 'password', 'confirm_password'];
     $errorFields = is_array($errorFields) ? $errorFields : ($errorFields === null ? [] : [$errorFields]);
     $_SESSION['auth_error_fields'] = array_values(array_unique(array_intersect($allowedFields, $errorFields)));
@@ -132,9 +140,9 @@ if ($action === 'login') {
     try {
         $pdo = getDbConnection();
         $stmt = $pdo->prepare(
-            'SELECT user_id, username, email, password_hash, trust_score, is_admin, account_status
+            'SELECT user_id, username, email, password_hash, trust_score, is_admin, account_status, ban_reason
              FROM users
-             WHERE username = :username
+             WHERE BINARY username = BINARY :username
              LIMIT 1'
         );
         $stmt->execute([':username' => $username]);
@@ -144,8 +152,10 @@ if ($action === 'login') {
             fail('Invalid username or password.', 'index.php', false, ['username', 'password']);
         }
 
+        tokaEnforceTrustScoreBan($pdo, $user);
+
         if ($user['account_status'] === 'Banned') {
-            fail(TOKA_BANNED_LOGIN_MESSAGE, 'index.php', true);
+            fail(TOKA_BANNED_LOGIN_MESSAGE, 'index.php', true, null, (string) ($user['ban_reason'] ?? ''));
         }
         if (in_array($user['account_status'], ['Suspended', 'Action Needed'], true)) {
             fail('Your account is currently suspended.', 'index.php');
@@ -155,7 +165,7 @@ if ($action === 'login') {
             $_SESSION = [];
             session_regenerate_id(true);
         }
-        unset($_SESSION['auth_error'], $_SESSION['auth_banned_login'], $_SESSION['auth_old_input'], $_SESSION['auth_error_fields']);
+        unset($_SESSION['auth_error'], $_SESSION['auth_banned_login'], $_SESSION['auth_ban_reason'], $_SESSION['auth_old_input'], $_SESSION['auth_error_fields']);
         $_SESSION['user'] = [
             'user_id' => (int) $user['user_id'],
             'username' => $user['username'],
@@ -167,14 +177,7 @@ if ($action === 'login') {
 
         $tabToken = tokaCreateTabAuthToken();
         $destination = tokaAppendTabAuthToUrl(tokaHome($_SESSION['user']), $tabToken);
-        $safeToken = json_encode($tabToken, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
-        $safeDestination = json_encode($destination, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
-        echo '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
-            . '<title>Signing in</title><p>Opening your account…</p><script>try{sessionStorage.setItem('
-            . json_encode(TOKA_TAB_AUTH_STORAGE_KEY) . ',' . $safeToken . ');}catch(e){}location.replace('
-            . $safeDestination . ');</script><noscript><a href="'
-            . htmlspecialchars($destination, ENT_QUOTES, 'UTF-8')
-            . '">Continue to Toka</a></noscript></html>';
+        header('Location: ' . $destination, true, 303);
         exit;
     } catch (PDOException $e) {
         error_log('Login DB error: ' . $e->getMessage());

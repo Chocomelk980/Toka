@@ -3,6 +3,7 @@ session_start();
 require_once __DIR__ . '/../LOGIN_PAGE/access.php';
 tokaRequireRole();
 require_once __DIR__ . '/../LOGIN_PAGE/dbconnect.php';
+require_once __DIR__ . '/audit_archive_helpers.php';
 require_once __DIR__ . '/cycle_helpers.php';
 require_once __DIR__ . '/group_limits.php';
 require_once __DIR__ . '/freeze_poll_helpers.php';
@@ -63,6 +64,7 @@ function groupTrustScoreHistory(PDO $pdo, int $groupId): array
          JOIN group_members gm ON gm.member_id = p.member_id AND gm.group_id = al.group_id
          JOIN round_schedules rs ON rs.round_id = p.round_id AND rs.group_id = al.group_id
          WHERE al.group_id = :group_id
+           AND NOT EXISTS (SELECT 1 FROM audit_log_archives ala WHERE ala.log_id = al.log_id)
            AND al.activity_type IN (\'Payment Verified\', \'Payment Marked Missed\')
          ORDER BY al.timestamp DESC, al.log_id DESC'
     );
@@ -115,7 +117,9 @@ function actionButton(string $label, bool $enabled, string $action, string $toke
 {
     $disabled = $enabled ? '' : ' disabled';
     $reasonInput = $action === 'freeze' ? '<input type="hidden" name="reason" value="">' : '';
-    $buttonClass = $action === 'claim' ? 'action-button action-button-primary' : 'action-button';
+    $buttonClass = $action === 'freeze'
+        ? 'operator-button pay-button'
+        : ($action === 'claim' ? 'action-button action-button-primary' : 'action-button');
     return '<form method="post" class="action-form"><input type="hidden" name="csrf_token" value="' .
         h($token) . '"><input type="hidden" name="action" value="' . h($action) .
         '">' . $reasonInput . '<button class="' . $buttonClass . '" type="submit"' . $disabled . '>' . h($label) . '</button></form>';
@@ -124,6 +128,7 @@ function actionButton(string $label, bool $enabled, string $action, string $toke
 if ($groupId) {
     try {
         $pdo = getDbConnection();
+        tokaEnsureAuditArchiveTable($pdo);
         $stmt = $pdo->prepare(
             'SELECT pg.*, gm.role AS viewer_role,
                     (SELECT COUNT(*) FROM group_members m WHERE m.group_id = pg.group_id) AS member_count
@@ -187,8 +192,10 @@ if ($groupId) {
                 $existingRoundCount = (int) $stmt->fetchColumn();
                 if ($lockedGroup && $lockedGroup['group_status'] === 'Active' && $existingRoundCount === 0) {
                     $stmt = $pdo->prepare(
-                        'SELECT member_id, role FROM group_members WHERE group_id = :group_id
-                         ORDER BY assigned_slot_number FOR UPDATE'
+                        'SELECT gm.member_id, gm.role, u.trust_score
+                         FROM group_members gm JOIN users u ON u.user_id = gm.user_id
+                         WHERE gm.group_id = :group_id
+                         ORDER BY gm.assigned_slot_number FOR UPDATE'
                     );
                     $stmt->execute([':group_id' => $groupId]);
                     $cycleMembers = $stmt->fetchAll();
@@ -204,7 +211,7 @@ if ($groupId) {
                 'SELECT rs.round_id, rs.round_number, rs.receiver_member_id, rs.target_deadline,
                         rs.round_status, rs.actual_disbursement_date, rs.recipient_claimed_at,
                         rs.operator_approved_at, rs.remarks,
-                        receiver.username AS receiver_name,
+                        receiver.username AS receiver_name, receiver_member.role AS receiver_role,
                         COALESCE(SUM(CASE WHEN p.payment_status = "Verified" THEN p.amount_due ELSE 0 END), 0) AS collected,
                         COUNT(DISTINCT CASE WHEN p.payment_status = "Verified" THEN p.member_id END) AS verified_member_count,
                         COUNT(DISTINCT CASE WHEN p.payment_status = "Pending Verification" THEN p.member_id END) AS pending_member_count
@@ -215,7 +222,7 @@ if ($groupId) {
                  WHERE rs.group_id = :group_id
                  GROUP BY rs.round_id, rs.round_number, rs.receiver_member_id, rs.target_deadline,
                           rs.round_status, rs.actual_disbursement_date, rs.recipient_claimed_at,
-                          rs.operator_approved_at, rs.remarks, receiver.username
+                          rs.operator_approved_at, rs.remarks, receiver.username, receiver_member.role
                  ORDER BY rs.round_number'
             );
             $stmt->execute([':group_id' => $groupId]);
@@ -281,7 +288,9 @@ if ($groupId) {
             $stmt = $pdo->prepare(
                 'SELECT al.activity_type, al.details, al.timestamp, u.username
                  FROM audit_logs al JOIN users u ON u.user_id = al.actor_user_id
-                 WHERE al.group_id = :group_id ORDER BY al.timestamp DESC LIMIT 12'
+                 WHERE al.group_id = :group_id
+                   AND NOT EXISTS (SELECT 1 FROM audit_log_archives ala WHERE ala.log_id = al.log_id)
+                 ORDER BY al.timestamp DESC LIMIT 12'
             );
             $stmt->execute([':group_id' => $groupId]);
             $activity = $stmt->fetchAll();
@@ -325,11 +334,16 @@ if ($groupId) {
 
 if (!$group && $loadError === '') http_response_code(404);
 
+$claimApproverRole = ($currentRound['receiver_role'] ?? '') === 'Main Operator'
+    ? 'Co-Operator'
+    : 'Main Operator';
+
 if ($group && isset($_SESSION['group_dashboard_flash'][$groupId])) {
     $actionMessage = (string) $_SESSION['group_dashboard_flash'][$groupId];
     if ($actionMessage === 'Payment submitted.') {
         $submittedActionNotice = 'Payment submitted';
-    } elseif ($actionMessage === 'Pot claim submitted. It is waiting for the Main Operator to approve it.') {
+    } elseif (str_starts_with($actionMessage, 'Pot claim submitted. It is waiting for the ')
+        && str_ends_with($actionMessage, ' to approve it.')) {
         $submittedActionNotice = 'Pot claim submitted';
     } elseif (in_array($actionMessage, [
         'Payment verified.',
@@ -350,6 +364,8 @@ $groupStatus = (string) ($group['group_status'] ?? 'Waiting');
 $roundStatus = $currentRound['round_status'] ?? '';
 $isOperator = ($currentMember['role'] ?? '') === 'Main Operator';
 $isCoOperator = ($currentMember['role'] ?? '') === 'Co-Operator';
+$isClaimApprover = ($claimApproverRole === 'Main Operator' && $isOperator)
+    || ($claimApproverRole === 'Co-Operator' && $isCoOperator);
 $canFreezeGroup = in_array($currentMember['role'] ?? '', ['Main Operator', 'Co-Operator'], true);
 $isRecipient = $currentRound && (int) $currentRound['receiver_member_id'] === (int) ($currentMember['member_id'] ?? 0);
 $hasDisbursed = $currentRound && $currentRound['actual_disbursement_date'] !== null;
@@ -366,7 +382,7 @@ $claimPaymentConditionMet = $allMembersVerified || ($paymentGraceExpired && $pen
 $canClaimPot = $groupStatus === 'Active' && $currentRound && $roundStatus === 'Ongoing'
     && $isRecipient && $claimPaymentConditionMet && !$receiptClaimed && !$potOperatorApproved;
 $canApprovePotClaim = $groupStatus === 'Active' && $currentRound && $roundStatus === 'Ongoing'
-    && $isOperator && $receiptClaimed && !$potOperatorApproved;
+    && $isClaimApprover && $receiptClaimed && !$potOperatorApproved;
 $freezePendingVotes = $activeFreezePoll
     ? max(0, (int) $activeFreezePoll['eligible_count'] - (int) $activeFreezePoll['approvals'] - (int) $activeFreezePoll['rejections'])
     : 0;
@@ -754,14 +770,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $group && $loadError === '') {
                         new DateTimeImmutable($reviewPayment['target_deadline']),
                         new DateTimeImmutable($reviewPayment['submitted_at'])
                     );
-                    $pdo->prepare(
-                        'UPDATE users
-                         SET trust_score = LEAST(100, GREATEST(0, trust_score + :adjustment))
-                         WHERE user_id = :user_id'
-                    )->execute([
-                        ':adjustment' => $trustAdjustment,
-                        ':user_id' => (int) $reviewPayment['user_id'],
-                    ]);
+                    tokaAdjustUserTrustScore($pdo, (int) $reviewPayment['user_id'], $trustAdjustment);
                     $details .= '; trust score ' . ($trustAdjustment > 0 ? '+' : '') . $trustAdjustment . ' points';
                 }
                 $pdo->prepare(
@@ -783,6 +792,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $group && $loadError === '') {
                 if ($pdo->inTransaction()) $pdo->rollBack();
                 if ($e instanceof RuntimeException) {
                     $actionMessage = $e->getMessage();
+                    if ($actionMessage === 'This payment is not awaiting your approval stage.') {
+                        $submittedActionNotice = $actionMessage;
+                    }
                 } else {
                     error_log('Payment approval error: ' . $e->getMessage());
                     $actionMessage = 'The payment approval could not be saved. Please try again.';
@@ -943,7 +955,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $group && $loadError === '') {
                 $pdo, $groupId, (int) $currentRound['round_id'], $userId,
                 (int) $currentMember['member_id']
             );
-            $_SESSION['group_dashboard_flash'][$groupId] = 'Pot claim submitted. It is waiting for the Main Operator to approve it.';
+            $_SESSION['group_dashboard_flash'][$groupId] = 'Pot claim submitted. It is waiting for the '
+                . $claimApproverRole . ' to approve it.';
             header('Location: group_dashboard.php?id=' . $groupId);
             exit;
         } catch (Throwable $e) {
@@ -985,6 +998,8 @@ $roundStatus = $currentRound['round_status'] ?? '';
 $groupStatus = (string) ($group['group_status'] ?? 'Waiting');
 $isOperator = ($currentMember['role'] ?? '') === 'Main Operator';
 $isCoOperator = ($currentMember['role'] ?? '') === 'Co-Operator';
+$isClaimApprover = ($claimApproverRole === 'Main Operator' && $isOperator)
+    || ($claimApproverRole === 'Co-Operator' && $isCoOperator);
 $canFreezeGroup = in_array($currentMember['role'] ?? '', ['Main Operator', 'Co-Operator'], true);
 $isRecipient = $currentRound && (int) $currentRound['receiver_member_id'] === (int) ($currentMember['member_id'] ?? 0);
 $hasDisbursed = $currentRound && $currentRound['actual_disbursement_date'] !== null;
@@ -1001,7 +1016,7 @@ $claimPaymentConditionMet = $allMembersVerified || ($paymentGraceExpired && $pen
 $canClaimPot = $groupStatus === 'Active' && $currentRound && $roundStatus === 'Ongoing'
     && $isRecipient && $claimPaymentConditionMet && !$receiptClaimed && !$potOperatorApproved;
 $canApprovePotClaim = $groupStatus === 'Active' && $currentRound && $roundStatus === 'Ongoing'
-    && $isOperator && $receiptClaimed && !$potOperatorApproved;
+    && $isClaimApprover && $receiptClaimed && !$potOperatorApproved;
 $paymentCycleIsOpen = $groupStatus === 'Active' && $currentRound
     && $roundStatus === 'Ongoing' && !$hasDisbursed && !$receiptClaimed
     && !$paymentGraceExpired && count($channels) > 0;
@@ -1024,7 +1039,7 @@ $roundExpected = (float) ($group['contribution_amount'] ?? 0) * $slotCount;
 $progressNote = 'Waiting for schedule setup';
 if ($currentRound) {
     if ($receiptClaimed && !$potOperatorApproved) {
-        $progressNote = 'Waiting for Main Operator approval';
+        $progressNote = 'Waiting for ' . $claimApproverRole . ' approval';
     } elseif ($canClaimPot) {
         $progressNote = $allMembersVerified
             ? 'All payments verified; waiting for recipient to claim the pot'
@@ -1057,7 +1072,8 @@ foreach ($members as $member) {
 }
 $roundSubtitle = 'Current Receiver: ' . ($currentRound['receiver_name'] ?? 'Not assigned');
 if ($receiptClaimed && !$potOperatorApproved) {
-    $roundSubtitle = 'Pot claim by ' . ($currentRound['receiver_name'] ?? 'the recipient') . ' is waiting for Main Operator approval';
+    $roundSubtitle = 'Pot claim by ' . ($currentRound['receiver_name'] ?? 'the recipient')
+        . ' is waiting for ' . $claimApproverRole . ' approval';
 } elseif ($allMembersVerified && !$receiptClaimed) {
     $roundSubtitle = 'All payments are verified; ' . ($currentRound['receiver_name'] ?? 'the recipient') . ' can claim the pot';
 } elseif ($potOperatorApproved) {
@@ -1119,7 +1135,7 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                         <h1><?= h($group['group_name']) ?></h1>
                         <span class="round-badge">Round: <?= $roundNumber ?>/<?= $roundCount ?></span>
                         <?php if ($receiptClaimed && !$potOperatorApproved): ?>
-                            <span class="round-status awaiting">Awaiting Main Operator Approval</span>
+                            <span class="round-status awaiting">Awaiting <?= h($claimApproverRole) ?> Approval</span>
                         <?php elseif ($canClaimPot || ($allMembersVerified && !$receiptClaimed)): ?>
                             <span class="round-status awaiting">Pot Ready to Claim</span>
                         <?php endif; ?>
@@ -1386,18 +1402,23 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                             <button class="operator-button muted-button" type="button" disabled>Submit Pay</button>
                         <?php endif; ?>
                     </div>
-                    <?php if ($isOperator): ?>
-                        <?php if ($canApprovePotClaim): ?>
-                            <?= actionButton('Approve Pot Claim', true, 'approve_claim', $csrfToken) ?>
-                        <?php else: ?>
-                            <button class="operator-button muted-button" type="button" disabled>Approve Pot Claim</button>
-                        <?php endif; ?>
-                    <?php endif; ?>
                     <?php if ($canFreezeGroup && $groupStatus === 'Active'): ?>
                         <?php if ($activeFreezePoll): ?>
                             <button class="operator-button muted-button" type="button" disabled>Freeze Vote In Progress</button>
                         <?php else: ?>
                             <?= actionButton('Freeze Group', true, 'freeze', $csrfToken) ?>
+                        <?php endif; ?>
+                    <?php endif; ?>
+                    <?php if ($isOperator && $pendingRequests): ?>
+                        <button class="operator-button action-button" type="button" data-open-requests>
+                            Join Requests (<?= count($pendingRequests) ?>)
+                        </button>
+                    <?php endif; ?>
+                    <?php if ($isClaimApprover): ?>
+                        <?php if ($canApprovePotClaim): ?>
+                            <?= actionButton('Approve Pot Claim', true, 'approve_claim', $csrfToken) ?>
+                        <?php else: ?>
+                            <button class="operator-button muted-button" type="button" disabled>Approve Pot Claim</button>
                         <?php endif; ?>
                     <?php endif; ?>
                     <?php if ($canFreezeGroup && $groupStatus === 'Frozen'): ?>
@@ -1654,7 +1675,7 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
     document.getElementById('member-filter')?.addEventListener('change', hideTrustTooltip);
 
     const requestsDialog = document.getElementById('join-requests-dialog');
-    if (requestsDialog) requestsDialog.showModal();
+    document.querySelector('[data-open-requests]')?.addEventListener('click', () => requestsDialog?.showModal());
     requestsDialog?.querySelectorAll('[data-close-requests]').forEach(button => {
         button.addEventListener('click', () => requestsDialog.close());
     });
@@ -1705,7 +1726,7 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
     const actionConfirmCopy = {
         claim: {
             title: 'Confirm pot claim?',
-            message: 'Confirm that you received the pot? Your claim will be sent to the Main Operator. The next round starts after approval.',
+            message: 'Confirm that you received the pot? Your claim will be sent to the <?= h($claimApproverRole) ?>. The next round starts after approval.',
             button: 'Confirm Claim'
         },
         approve_claim: {
@@ -1839,7 +1860,7 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
     if (freezePollWatch) {
         const refreshFreezePoll = async () => {
             try {
-                const response = await fetch(`freeze_poll_status.php?group_id=${encodeURIComponent(freezePollWatch.dataset.groupId || '')}`, {
+                const response = await fetch(window.tokaTabAuthUrl(`freeze_poll_status.php?group_id=${encodeURIComponent(freezePollWatch.dataset.groupId || '')}`), {
                     credentials: 'same-origin',
                     headers: { Accept: 'application/json' }
                 });
@@ -1848,11 +1869,11 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                 const activePoll = data.active_poll;
                 const displayedPollId = freezePollWatch.dataset.activePollId || '';
                 if (activePoll && String(activePoll.poll_id) !== displayedPollId) {
-                    window.location.reload();
+                    window.tokaTabReload();
                     return;
                 }
                 if (!activePoll && displayedPollId) {
-                    window.location.reload();
+                    window.tokaTabReload();
                     return;
                 }
                 if (activePoll) {
@@ -1865,7 +1886,7 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                 }
                 const unreadOutcomeId = data.unread_outcome_id ? String(data.unread_outcome_id) : '';
                 if (unreadOutcomeId && unreadOutcomeId !== (freezePollWatch.dataset.unreadOutcomeId || '')) {
-                    window.location.reload();
+                    window.tokaTabReload();
                 }
             } catch (error) {
                 // Keep the current page usable if a brief status check fails.
@@ -1891,7 +1912,7 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
             if (isVisible) {
                 visibleCards.push(card);
             } else {
-                card.classList.remove('card-odd', 'card-even', 'card-last-row');
+                card.classList.remove('card-odd', 'card-even', 'card-last-row', 'card-full-row');
             }
         });
 
@@ -1905,6 +1926,7 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                 ? (index >= total - 2)
                 : (index === total - 1);
             card.classList.toggle('card-last-row', isLastRow);
+            card.classList.toggle('card-full-row', total % 2 === 1 && index === total - 1);
         });
 
         if (emptyMessage) {

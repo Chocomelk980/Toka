@@ -35,6 +35,31 @@ function tokaPaymentTrustAdjustment(DateTimeImmutable $targetDeadline, DateTimeI
     return $lateDays <= 2 ? -10 : -25;
 }
 
+function tokaAdjustUserTrustScore(PDO $pdo, int $userId, int $adjustment): int
+{
+    $pdo->prepare(
+        'UPDATE users
+         SET trust_score = LEAST(100, GREATEST(0, trust_score + :adjustment))
+         WHERE user_id = :user_id'
+    )->execute([':adjustment' => $adjustment, ':user_id' => $userId]);
+
+    $stmt = $pdo->prepare('SELECT trust_score, account_status FROM users WHERE user_id = :user_id FOR UPDATE');
+    $stmt->execute([':user_id' => $userId]);
+    $user = $stmt->fetch();
+    if (!$user) throw new RuntimeException('The user trust score could not be updated.');
+
+    $trustScore = (int) $user['trust_score'];
+    if ($trustScore === 0 && $user['account_status'] !== 'Banned') {
+        $pdo->prepare(
+            'UPDATE users SET account_status = :status, ban_reason = :reason WHERE user_id = :user_id'
+        )->execute([
+            ':status' => 'Banned', ':reason' => 'Trust score too low.', ':user_id' => $userId,
+        ]);
+    }
+
+    return $trustScore;
+}
+
 function tokaApplyMissedCyclePayments(PDO $pdo, int $groupId, int $roundId, int $actorUserId): void
 {
     $ownsTransaction = !$pdo->inTransaction();
@@ -96,9 +121,6 @@ function tokaApplyMissedCyclePayments(PDO $pdo, int $groupId, int $roundId, int 
                  is_member_confirmed, is_cooperator_verified, is_operator_verified, payment_status)
              VALUES (:round_id, :member_id, NULL, :amount_due, 0, NULL, 0, 0, 0, :overdue)'
         );
-        $reduceTrust = $pdo->prepare(
-            'UPDATE users SET trust_score = LEAST(100, GREATEST(0, trust_score - 50)) WHERE user_id = :user_id'
-        );
         $logMissed = $pdo->prepare(
             'INSERT INTO audit_logs
                 (group_id, round_id, payment_id, actor_user_id, activity_type, details, verification_status)
@@ -112,7 +134,7 @@ function tokaApplyMissedCyclePayments(PDO $pdo, int $groupId, int $roundId, int 
                 ':overdue' => 'Overdue',
             ]);
             $missedPaymentId = (int) $pdo->lastInsertId();
-            $reduceTrust->execute([':user_id' => (int) $missedMember['user_id']]);
+            tokaAdjustUserTrustScore($pdo, (int) $missedMember['user_id'], -50);
             $logMissed->execute([
                 ':group_id' => $groupId,
                 ':round_id' => $roundId,
@@ -156,7 +178,7 @@ function tokaCycleReceiverOrder(array $members): array
 {
     $operatorIds = [];
     $coOperatorIds = [];
-    $memberIds = [];
+    $memberIdsByTrust = [];
 
     foreach ($members as $member) {
         $memberId = (int) $member['member_id'];
@@ -165,7 +187,8 @@ function tokaCycleReceiverOrder(array $members): array
         } elseif ($member['role'] === 'Co-Operator') {
             $coOperatorIds[] = $memberId;
         } else {
-            $memberIds[] = $memberId;
+            $trustScore = (int) ($member['trust_score'] ?? 100);
+            $memberIdsByTrust[$trustScore][] = $memberId;
         }
     }
 
@@ -173,7 +196,13 @@ function tokaCycleReceiverOrder(array $members): array
         throw new RuntimeException('A cycle requires one Main Operator and at most one Co-Operator.');
     }
 
-    shuffle($memberIds);
+    krsort($memberIdsByTrust, SORT_NUMERIC);
+    $memberIds = [];
+    foreach ($memberIdsByTrust as $tiedMemberIds) {
+        shuffle($tiedMemberIds);
+        array_push($memberIds, ...$tiedMemberIds);
+    }
+
     return array_merge($memberIds, $coOperatorIds, $operatorIds);
 }
 
@@ -299,7 +328,8 @@ function tokaApproveCyclePotClaim(PDO $pdo, int $groupId, int $roundId, int $use
 
         $stmt = $pdo->prepare(
             'SELECT rs.round_number, rs.round_status, rs.recipient_claimed_at,
-                    rs.operator_approved_at, receiver.username AS receiver_name
+                    rs.operator_approved_at, receiver.username AS receiver_name,
+                    receiver_member.role AS receiver_role
              FROM round_schedules rs
              JOIN group_members receiver_member ON receiver_member.member_id = rs.receiver_member_id
              JOIN users receiver ON receiver.user_id = receiver_member.user_id
@@ -308,15 +338,19 @@ function tokaApproveCyclePotClaim(PDO $pdo, int $groupId, int $roundId, int $use
         $stmt->execute([':round_id' => $roundId, ':group_id' => $groupId]);
         $round = $stmt->fetch();
 
+        $approverRole = ($round['receiver_role'] ?? '') === 'Main Operator'
+            ? 'Co-Operator'
+            : 'Main Operator';
+
         $stmt = $pdo->prepare(
             'SELECT member_id FROM group_members
              WHERE group_id = :group_id AND user_id = :user_id AND role = :role
              LIMIT 1 FOR UPDATE'
         );
-        $stmt->execute([':group_id' => $groupId, ':user_id' => $userId, ':role' => 'Main Operator']);
-        $operatorMemberId = $stmt->fetchColumn();
+        $stmt->execute([':group_id' => $groupId, ':user_id' => $userId, ':role' => $approverRole]);
+        $approverMemberId = $stmt->fetchColumn();
 
-        if (!$group || $group['group_status'] !== 'Active' || !$round || !$operatorMemberId
+        if (!$group || $group['group_status'] !== 'Active' || !$round || !$approverMemberId
             || $round['round_status'] !== 'Ongoing' || $round['recipient_claimed_at'] === null
             || $round['operator_approved_at'] !== null) {
             throw new DomainException('There is no pot claim waiting for your approval.');
@@ -371,8 +405,8 @@ function tokaApproveCyclePotClaim(PDO $pdo, int $groupId, int $roundId, int $use
         )->execute([
             ':group_id' => $groupId, ':round_id' => $roundId, ':actor' => $userId,
             ':activity' => 'Pot Claim Approved',
-            ':details' => 'The Main Operator approved ' . $round['receiver_name'] . "'s claim; the pot was marked as disbursed.",
-            ':verification' => 'Main Operator',
+            ':details' => 'The ' . $approverRole . ' approved ' . $round['receiver_name'] . "'s claim; the pot was marked as disbursed.",
+            ':verification' => $approverRole,
         ]);
 
         if (!$nextRoundId) {

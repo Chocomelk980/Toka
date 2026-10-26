@@ -23,6 +23,17 @@
         history.replaceState(history.state, '', currentUrl.href);
     }
 
+    const withTabAuthToken = url => {
+        const destination = new URL(url, window.location.href);
+        if (destination.origin === window.location.origin) {
+            destination.searchParams.set(parameter, token);
+        }
+        return destination.href;
+    };
+    window.tokaTabAuthUrl = withTabAuthToken;
+    window.tokaTabNavigate = url => window.location.assign(withTabAuthToken(url));
+    window.tokaTabReload = () => window.location.replace(withTabAuthToken(window.location.href));
+
     document.querySelectorAll('a[href]').forEach(anchor => {
         const href = anchor.getAttribute('href') || '';
         if (!href || href.startsWith('#') || href.startsWith('javascript:')
@@ -30,8 +41,7 @@
         try {
             const destination = new URL(href, window.location.href);
             if (destination.origin !== window.location.origin) return;
-            destination.searchParams.set(parameter, token);
-            anchor.href = destination.href;
+            anchor.href = withTabAuthToken(destination.href);
         } catch (error) {
             // Ignore malformed or non-navigation links.
         }

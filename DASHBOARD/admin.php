@@ -3,6 +3,7 @@ session_start();
 
 require_once __DIR__ . '/../LOGIN_PAGE/access.php';
 $adminUser = tokaRequireRole(true);
+require_once __DIR__ . '/audit_archive_helpers.php';
 
 $username = $_SESSION['user']['username'] ?? 'User';
 $adminViews = [
@@ -12,13 +13,17 @@ $adminViews = [
     'group-pots' => ['label' => 'Group Pots', 'description' => 'Current round status and money pool values for each group'],
     'frozen-groups' => ['label' => 'Frozen / Flagged Groups', 'description' => 'Groups currently frozen or flagged for review'],
     'user-directory' => ['label' => 'User Directory', 'description' => 'Registration and account details for all users'],
-    'system-audit-logs' => ['label' => 'System Audit Logs', 'description' => 'Read-only global activity ledger'],
+    'system-audit-logs' => ['label' => 'System Audit Logs', 'description' => 'Search and archive global activity records'],
 ];
 $requestedAdminView = $_GET['view'] ?? 'dashboard';
 $adminView = is_string($requestedAdminView) && isset($adminViews[$requestedAdminView])
     ? $requestedAdminView
     : 'dashboard';
 $adminPage = $adminViews[$adminView];
+$requestedLogView = $_GET['log_view'] ?? 'active';
+$logView = $requestedLogView === 'archives' ? 'archives' : 'active';
+$requestedArchiveView = $_GET['archive_view'] ?? 'active';
+$archiveView = $requestedArchiveView === 'archives' ? 'archives' : 'active';
 $adminHeading = $adminView === 'dashboard' ? 'Admin Panel' : $adminPage['label'];
 $registeredUsers = [];
 $auditLogs = [];
@@ -49,6 +54,7 @@ $moderationToken = $_SESSION['admin_moderation_csrf'];
 
 try {
     $pdo = getDbConnection();
+    tokaEnsureAdminArchiveTables($pdo);
 } catch (PDOException $e) {
     error_log('Admin database connection error: ' . $e->getMessage());
     $usersError = 'We could not load registered users. Please refresh to try again.';
@@ -65,7 +71,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $token = $_POST['moderation_token'] ?? '';
     $targetUserId = filter_var($_POST['user_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
     $targetGroupId = filter_var($_POST['group_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+    $targetRoundId = filter_var($_POST['round_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+    $targetLogId = filter_var($_POST['log_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
     $expectedStatus = is_string($_POST['expected_status'] ?? null) ? $_POST['expected_status'] : '';
+    $banReason = is_string($_POST['ban_reason'] ?? null) ? trim($_POST['ban_reason']) : '';
 
     try {
         if (!is_string($token) || !hash_equals($moderationToken, $token)) {
@@ -102,18 +111,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 || ($action === 'unban' && $expectedStatus !== 'Banned')) {
                 throw new DomainException('This user’s status has changed. Review the updated roster and try again.', 409);
             }
+            if ($action === 'ban') {
+                $banReasonLength = function_exists('mb_strlen')
+                    ? mb_strlen($banReason, 'UTF-8')
+                    : strlen($banReason);
+                if ($banReason === '' || $banReasonLength > 500) {
+                    throw new DomainException('Enter a reason for the ban using no more than 500 characters.', 422);
+                }
+            }
 
             $newStatus = $action === 'ban' ? 'Banned' : 'Active';
-            $stmt = $pdo->prepare('UPDATE users SET account_status = :status WHERE user_id = :user_id');
-            $stmt->execute([':status' => $newStatus, ':user_id' => $targetUserId]);
+            $stmt = $pdo->prepare(
+                'UPDATE users SET account_status = :status, ban_reason = :ban_reason WHERE user_id = :user_id'
+            );
+            $stmt->execute([
+                ':status' => $newStatus,
+                ':ban_reason' => $action === 'ban' ? $banReason : null,
+                ':user_id' => $targetUserId,
+            ]);
             $verb = $action === 'ban' ? 'banned' : 'unbanned';
+            $auditDetails = $target['username'] . ' (User ID ' . $targetUserId . ') was ' . $verb . ' by the admin.';
+            if ($action === 'ban') $auditDetails .= ' Reason: ' . $banReason;
             $pdo->prepare(
                 'INSERT INTO audit_logs (actor_user_id, activity_type, details, verification_status)
                  VALUES (:actor, :activity, :details, :verification)'
             )->execute([
                 ':actor' => $adminUser['user_id'],
                 ':activity' => $action === 'ban' ? 'User Banned' : 'User Unbanned',
-                ':details' => $target['username'] . ' (User ID ' . $targetUserId . ') was ' . $verb . ' by the admin.',
+                ':details' => $auditDetails,
                 ':verification' => 'Admin',
             ]);
             $pdo->commit();
@@ -169,6 +194,212 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->commit();
             $_SESSION['admin_moderation_success'] = $targetGroup['group_name'] . ' has been ' . $verb . '.';
             header('Location: admin.php#dispute-heading', true, 303);
+            exit;
+        } elseif (in_array($action, ['archive-log', 'archive-logs'], true)) {
+            if ($action === 'archive-log') {
+                if (!$targetLogId) throw new DomainException('Choose a valid log to archive.', 422);
+                $targetLogIds = [$targetLogId];
+            } else {
+                $rawLogIds = $_POST['log_ids'] ?? '';
+                $decodedLogIds = is_string($rawLogIds) ? json_decode($rawLogIds, true) : null;
+                if (!is_array($decodedLogIds) || !$decodedLogIds || count($decodedLogIds) > 1000) {
+                    throw new DomainException('Select between 1 and 1,000 logs to archive.', 422);
+                }
+                $targetLogIds = [];
+                foreach ($decodedLogIds as $logId) {
+                    $validatedLogId = filter_var($logId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+                    if (!$validatedLogId) throw new DomainException('The selected logs are invalid. Refresh and try again.', 422);
+                    $targetLogIds[] = $validatedLogId;
+                }
+                $targetLogIds = array_values(array_unique($targetLogIds));
+            }
+
+            $pdo->beginTransaction();
+            $adminStmt = $pdo->prepare(
+                'SELECT user_id, is_admin, account_status FROM users WHERE user_id = :admin_id FOR UPDATE'
+            );
+            $adminStmt->execute([':admin_id' => $adminUser['user_id']]);
+            $actor = $adminStmt->fetch();
+            if (!$actor || !tokaIsAdmin($actor) || $actor['account_status'] !== 'Active') {
+                throw new DomainException('Only the active admin can archive logs.', 403);
+            }
+
+            $logPlaceholders = [];
+            $logParams = [];
+            foreach ($targetLogIds as $index => $logId) {
+                $placeholder = ':log_id_' . $index;
+                $logPlaceholders[] = $placeholder;
+                $logParams[$placeholder] = $logId;
+            }
+            $logIdsSql = implode(', ', $logPlaceholders);
+            $logStmt = $pdo->prepare("SELECT log_id FROM audit_logs WHERE log_id IN ($logIdsSql) ORDER BY log_id FOR UPDATE");
+            $logStmt->execute($logParams);
+            $foundLogIds = array_map('intval', $logStmt->fetchAll(PDO::FETCH_COLUMN));
+            sort($targetLogIds);
+            if ($foundLogIds !== $targetLogIds) {
+                throw new DomainException('One or more selected logs no longer exist. Refresh and try again.', 404);
+            }
+
+            $archiveStmt = $pdo->prepare("SELECT log_id FROM audit_log_archives WHERE log_id IN ($logIdsSql) ORDER BY log_id FOR UPDATE");
+            $archiveStmt->execute($logParams);
+            if ($archiveStmt->fetchColumn()) {
+                throw new DomainException('One or more selected logs are already archived. Refresh and try again.', 409);
+            }
+
+            $insertValues = [];
+            $insertParams = [];
+            foreach ($targetLogIds as $index => $logId) {
+                $logPlaceholder = ':archive_log_id_' . $index;
+                $adminPlaceholder = ':archive_admin_id_' . $index;
+                $insertValues[] = '(' . $logPlaceholder . ', ' . $adminPlaceholder . ')';
+                $insertParams[$logPlaceholder] = $logId;
+                $insertParams[$adminPlaceholder] = $adminUser['user_id'];
+            }
+            $pdo->prepare(
+                'INSERT INTO audit_log_archives (log_id, archived_by) VALUES ' . implode(', ', $insertValues)
+            )->execute($insertParams);
+            $pdo->commit();
+            $_SESSION['admin_moderation_success'] = count($targetLogIds) === 1
+                ? 'Log moved to Archives.'
+                : count($targetLogIds) . ' logs moved to Archives.';
+            header('Location: admin.php?view=system-audit-logs&log_view=archives#audit-heading', true, 303);
+            exit;
+        } elseif (in_array($action, ['archive-groups', 'archive-rounds'], true)) {
+            $archiveGroups = $action === 'archive-groups';
+            $rawRecordIds = $_POST[$archiveGroups ? 'group_ids' : 'round_ids'] ?? '';
+            $decodedRecordIds = is_string($rawRecordIds) ? json_decode($rawRecordIds, true) : null;
+            if (!is_array($decodedRecordIds) || !$decodedRecordIds || count($decodedRecordIds) > 1000) {
+                throw new DomainException('Select between 1 and 1,000 records to archive.', 422);
+            }
+            $recordIds = [];
+            foreach ($decodedRecordIds as $recordId) {
+                $validatedRecordId = filter_var($recordId, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+                if (!$validatedRecordId) throw new DomainException('The selected records are invalid. Refresh and try again.', 422);
+                $recordIds[] = $validatedRecordId;
+            }
+            $recordIds = array_values(array_unique($recordIds));
+
+            $pdo->beginTransaction();
+            $adminStmt = $pdo->prepare(
+                'SELECT user_id, is_admin, account_status FROM users WHERE user_id = :admin_id FOR UPDATE'
+            );
+            $adminStmt->execute([':admin_id' => $adminUser['user_id']]);
+            $actor = $adminStmt->fetch();
+            if (!$actor || !tokaIsAdmin($actor) || $actor['account_status'] !== 'Active') {
+                throw new DomainException('Only the active admin can archive records.', 403);
+            }
+
+            $idColumn = $archiveGroups ? 'group_id' : 'round_id';
+            $sourceTable = $archiveGroups ? 'paluwagan_groups' : 'round_schedules';
+            $archiveTable = $archiveGroups ? 'group_archives' : 'round_archives';
+            $recordPlaceholders = [];
+            $recordParams = [];
+            foreach ($recordIds as $index => $recordId) {
+                $placeholder = ':record_id_' . $index;
+                $recordPlaceholders[] = $placeholder;
+                $recordParams[$placeholder] = $recordId;
+            }
+            $recordIdsSql = implode(', ', $recordPlaceholders);
+            $eligibleFilter = $archiveGroups ? '' : " AND round_status = 'Paid Out'";
+            $recordStmt = $pdo->prepare(
+                "SELECT $idColumn FROM $sourceTable WHERE $idColumn IN ($recordIdsSql)$eligibleFilter ORDER BY $idColumn FOR UPDATE"
+            );
+            $recordStmt->execute($recordParams);
+            $foundRecordIds = array_map('intval', $recordStmt->fetchAll(PDO::FETCH_COLUMN));
+            sort($recordIds);
+            if ($foundRecordIds !== $recordIds) {
+                throw new DomainException('One or more selected records are unavailable. Refresh and try again.', 404);
+            }
+
+            $archiveStmt = $pdo->prepare(
+                "SELECT $idColumn FROM $archiveTable WHERE $idColumn IN ($recordIdsSql) ORDER BY $idColumn FOR UPDATE"
+            );
+            $archiveStmt->execute($recordParams);
+            if ($archiveStmt->fetchColumn()) {
+                throw new DomainException('One or more selected records are already archived. Refresh and try again.', 409);
+            }
+
+            $insertValues = [];
+            $insertParams = [];
+            foreach ($recordIds as $index => $recordId) {
+                $recordPlaceholder = ':archive_record_id_' . $index;
+                $adminPlaceholder = ':archive_admin_id_' . $index;
+                $insertValues[] = '(' . $recordPlaceholder . ', ' . $adminPlaceholder . ')';
+                $insertParams[$recordPlaceholder] = $recordId;
+                $insertParams[$adminPlaceholder] = $adminUser['user_id'];
+            }
+            $pdo->prepare(
+                "INSERT INTO $archiveTable ($idColumn, archived_by) VALUES " . implode(', ', $insertValues)
+            )->execute($insertParams);
+            $pdo->commit();
+            $_SESSION['admin_moderation_success'] = count($recordIds) . ($archiveGroups ? ' groups' : ' completed rounds') . ' moved to Archives.';
+            if ($archiveGroups) {
+                header('Location: admin.php?view=total-groups&archive_view=archives#total-groups-heading', true, 303);
+            } else {
+                header('Location: admin.php?view=completed-rounds&archive_view=archives#completed-rounds-heading', true, 303);
+            }
+            exit;
+        } elseif (in_array($action, ['archive-group', 'archive-round'], true)) {
+            if ($action === 'archive-group' && !$targetGroupId) {
+                throw new DomainException('Choose a valid group to archive.', 422);
+            }
+            if ($action === 'archive-round' && !$targetRoundId) {
+                throw new DomainException('Choose a valid completed round to archive.', 422);
+            }
+
+            $pdo->beginTransaction();
+            $adminStmt = $pdo->prepare(
+                'SELECT user_id, is_admin, account_status FROM users WHERE user_id = :admin_id FOR UPDATE'
+            );
+            $adminStmt->execute([':admin_id' => $adminUser['user_id']]);
+            $actor = $adminStmt->fetch();
+            if (!$actor || !tokaIsAdmin($actor) || $actor['account_status'] !== 'Active') {
+                throw new DomainException('Only the active admin can archive records.', 403);
+            }
+
+            if ($action === 'archive-group') {
+                $groupStmt = $pdo->prepare(
+                    'SELECT group_id FROM paluwagan_groups WHERE group_id = :group_id FOR UPDATE'
+                );
+                $groupStmt->execute([':group_id' => $targetGroupId]);
+                if (!$groupStmt->fetchColumn()) throw new DomainException('This group no longer exists.', 404);
+
+                $archiveStmt = $pdo->prepare(
+                    'SELECT group_id FROM group_archives WHERE group_id = :group_id FOR UPDATE'
+                );
+                $archiveStmt->execute([':group_id' => $targetGroupId]);
+                if ($archiveStmt->fetchColumn()) throw new DomainException('This group is already archived.', 409);
+
+                $pdo->prepare(
+                    'INSERT INTO group_archives (group_id, archived_by) VALUES (:group_id, :archived_by)'
+                )->execute([':group_id' => $targetGroupId, ':archived_by' => $adminUser['user_id']]);
+                $pdo->commit();
+                $_SESSION['admin_moderation_success'] = 'Group moved to Archives.';
+                header('Location: admin.php?view=total-groups&archive_view=archives#total-groups-heading', true, 303);
+                exit;
+            }
+
+            $roundStmt = $pdo->prepare(
+                "SELECT rs.round_id FROM round_schedules rs
+                 WHERE rs.round_id = :round_id AND rs.round_status = 'Paid Out' FOR UPDATE"
+            );
+            $roundStmt->execute([':round_id' => $targetRoundId]);
+            if (!$roundStmt->fetchColumn()) {
+                throw new DomainException('This completed round no longer exists.', 404);
+            }
+
+            $archiveStmt = $pdo->prepare(
+                'SELECT round_id FROM round_archives WHERE round_id = :round_id FOR UPDATE'
+            );
+            $archiveStmt->execute([':round_id' => $targetRoundId]);
+            if ($archiveStmt->fetchColumn()) throw new DomainException('This round is already archived.', 409);
+
+            $pdo->prepare(
+                'INSERT INTO round_archives (round_id, archived_by) VALUES (:round_id, :archived_by)'
+            )->execute([':round_id' => $targetRoundId, ':archived_by' => $adminUser['user_id']]);
+            $pdo->commit();
+            $_SESSION['admin_moderation_success'] = 'Completed round moved to Archives.';
+            header('Location: admin.php?view=completed-rounds&archive_view=archives#completed-rounds-heading', true, 303);
             exit;
         } else {
             throw new DomainException('Choose a valid moderation action.', 422);
@@ -289,15 +520,33 @@ if ($pdo) {
     try {
         // Start with the ledger so entries survive missing optional group/payment links.
         // No membership filter: this is the master log for every group.
-        $auditLogs = $pdo->query(
-            'SELECT al.log_id, al.timestamp, al.actor_user_id, al.activity_type, al.details,
-                    u.username, pg.group_code, p.transaction_no
-             FROM audit_logs al
-             LEFT JOIN users u ON u.user_id = al.actor_user_id
-             LEFT JOIN paluwagan_groups pg ON pg.group_id = al.group_id
-             LEFT JOIN payments p ON p.payment_id = al.payment_id
-             ORDER BY al.timestamp DESC, al.log_id DESC'
-        )->fetchAll();
+        if ($logView === 'archives') {
+            $auditLogs = $pdo->query(
+                'SELECT al.log_id, al.timestamp, al.actor_user_id, al.activity_type, al.details,
+                        u.username, pg.group_code, p.transaction_no,
+                        ala.archived_at, archive_user.username AS archived_by
+                 FROM audit_log_archives ala
+                 JOIN audit_logs al ON al.log_id = ala.log_id
+                 LEFT JOIN users u ON u.user_id = al.actor_user_id
+                 LEFT JOIN users archive_user ON archive_user.user_id = ala.archived_by
+                 LEFT JOIN paluwagan_groups pg ON pg.group_id = al.group_id
+                 LEFT JOIN payments p ON p.payment_id = al.payment_id
+                 ORDER BY ala.archived_at DESC, al.log_id DESC'
+            )->fetchAll();
+        } else {
+            $auditLogs = $pdo->query(
+                'SELECT al.log_id, al.timestamp, al.actor_user_id, al.activity_type, al.details,
+                        u.username, pg.group_code, p.transaction_no
+                 FROM audit_logs al
+                 LEFT JOIN users u ON u.user_id = al.actor_user_id
+                 LEFT JOIN paluwagan_groups pg ON pg.group_id = al.group_id
+                 LEFT JOIN payments p ON p.payment_id = al.payment_id
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM audit_log_archives ala WHERE ala.log_id = al.log_id
+                 )
+                 ORDER BY al.timestamp DESC, al.log_id DESC'
+            )->fetchAll();
+        }
     } catch (PDOException $e) {
         error_log('Admin audit DB error: ' . $e->getMessage());
         $auditError = 'We could not load the audit logs. Please refresh to try again.';
@@ -330,35 +579,76 @@ if ($pdo) {
     }
 
     try {
-        $allGroups = $pdo->query(
-            'SELECT pg.group_id, pg.group_code, pg.group_name, pg.group_status,
-                    pg.created_at, pg.first_payment_due, pg.total_member_slots,
-                    COALESCE(members.member_count, 0) AS member_count
-             FROM paluwagan_groups pg
-             LEFT JOIN (
-                 SELECT group_id, COUNT(*) AS member_count
-                 FROM group_members GROUP BY group_id
-             ) members ON members.group_id = pg.group_id
-             ORDER BY pg.created_at DESC, pg.group_id DESC'
-        )->fetchAll();
+        if ($archiveView === 'archives') {
+            $allGroups = $pdo->query(
+                'SELECT pg.group_id, pg.group_code, pg.group_name, pg.group_status,
+                        pg.created_at, pg.first_payment_due, pg.total_member_slots,
+                        COALESCE(members.member_count, 0) AS member_count,
+                        ga.archived_at, archive_user.username AS archived_by
+                 FROM group_archives ga
+                 JOIN paluwagan_groups pg ON pg.group_id = ga.group_id
+                 LEFT JOIN users archive_user ON archive_user.user_id = ga.archived_by
+                 LEFT JOIN (
+                     SELECT group_id, COUNT(*) AS member_count
+                     FROM group_members GROUP BY group_id
+                 ) members ON members.group_id = pg.group_id
+                 ORDER BY ga.archived_at DESC, pg.group_id DESC'
+            )->fetchAll();
+        } else {
+            $allGroups = $pdo->query(
+                'SELECT pg.group_id, pg.group_code, pg.group_name, pg.group_status,
+                        pg.created_at, pg.first_payment_due, pg.total_member_slots,
+                        COALESCE(members.member_count, 0) AS member_count
+                 FROM paluwagan_groups pg
+                 LEFT JOIN (
+                     SELECT group_id, COUNT(*) AS member_count
+                     FROM group_members GROUP BY group_id
+                 ) members ON members.group_id = pg.group_id
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM group_archives ga WHERE ga.group_id = pg.group_id
+                 )
+                 ORDER BY pg.created_at DESC, pg.group_id DESC'
+            )->fetchAll();
+        }
     } catch (PDOException $e) {
         error_log('Admin total groups DB error: ' . $e->getMessage());
         $groupsError = 'We could not load platform groups. Please refresh to try again.';
     }
 
     try {
-        $completedRounds = $pdo->query(
-            "SELECT pg.group_id, pg.group_code, pg.group_name,
-                    rs.round_number, rs.target_deadline,
-                    COALESCE(rs.operator_approved_at, rs.actual_disbursement_date) AS completed_at,
-                    receiver.username AS receiver_name
-             FROM round_schedules rs
-             JOIN paluwagan_groups pg ON pg.group_id = rs.group_id
-             JOIN group_members receiver_member ON receiver_member.member_id = rs.receiver_member_id
-             JOIN users receiver ON receiver.user_id = receiver_member.user_id
-             WHERE rs.round_status = 'Paid Out'
-             ORDER BY completed_at DESC, pg.group_id DESC, rs.round_number DESC"
-        )->fetchAll();
+        if ($archiveView === 'archives') {
+            $completedRounds = $pdo->query(
+                "SELECT rs.round_id, pg.group_id, pg.group_code, pg.group_name,
+                        rs.round_number, rs.target_deadline,
+                        COALESCE(rs.operator_approved_at, rs.actual_disbursement_date) AS completed_at,
+                        receiver.username AS receiver_name,
+                        ra.archived_at, archive_user.username AS archived_by
+                 FROM round_archives ra
+                 JOIN round_schedules rs ON rs.round_id = ra.round_id
+                 JOIN paluwagan_groups pg ON pg.group_id = rs.group_id
+                 JOIN group_members receiver_member ON receiver_member.member_id = rs.receiver_member_id
+                 JOIN users receiver ON receiver.user_id = receiver_member.user_id
+                 LEFT JOIN users archive_user ON archive_user.user_id = ra.archived_by
+                 WHERE rs.round_status = 'Paid Out'
+                 ORDER BY ra.archived_at DESC, rs.round_id DESC"
+            )->fetchAll();
+        } else {
+            $completedRounds = $pdo->query(
+                "SELECT rs.round_id, pg.group_id, pg.group_code, pg.group_name,
+                        rs.round_number, rs.target_deadline,
+                        COALESCE(rs.operator_approved_at, rs.actual_disbursement_date) AS completed_at,
+                        receiver.username AS receiver_name
+                 FROM round_schedules rs
+                 JOIN paluwagan_groups pg ON pg.group_id = rs.group_id
+                 JOIN group_members receiver_member ON receiver_member.member_id = rs.receiver_member_id
+                 JOIN users receiver ON receiver.user_id = receiver_member.user_id
+                 WHERE rs.round_status = 'Paid Out'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM round_archives ra WHERE ra.round_id = rs.round_id
+                   )
+                 ORDER BY completed_at DESC, pg.group_id DESC, rs.round_number DESC"
+            )->fetchAll();
+        }
     } catch (PDOException $e) {
         error_log('Admin completed rounds DB error: ' . $e->getMessage());
         $roundsError = 'We could not load completed rounds. Please refresh to try again.';
@@ -601,60 +891,86 @@ function adminActivityKind(string $activity): string
 
             <?php if ($adminView === 'system-audit-logs'): ?>
             <section class="admin-panel audit-panel" aria-labelledby="audit-heading">
+                <nav class="audit-tabs" aria-label="System audit log views">
+                    <a href="admin.php?view=system-audit-logs" class="audit-tab<?= $logView === 'active' ? ' active' : '' ?>"<?= $logView === 'active' ? ' aria-current="page"' : '' ?>>Logs</a>
+                    <a href="admin.php?view=system-audit-logs&amp;log_view=archives" class="audit-tab<?= $logView === 'archives' ? ' active' : '' ?>"<?= $logView === 'archives' ? ' aria-current="page"' : '' ?>>Archives</a>
+                </nav>
                 <header class="audit-heading">
-                    <div><h2 id="audit-heading">Master System Audit Search</h2><p>Read-only global activity ledger</p></div>
+                    <div><h2 id="audit-heading"><?= $logView === 'archives' ? 'Archived System Audit Logs' : 'Master System Audit Search' ?></h2><p><?= $logView === 'archives' ? 'Archived activity records across the platform' : 'Global activity ledger across groups, payments, and administration' ?></p></div>
                     <div class="audit-tools">
+                        <?php if ($logView === 'active'): ?>
+                            <button id="archive-selected-logs" class="admin-button secondary" type="button" <?= ($auditError !== '' || !$auditLogs) ? 'disabled' : '' ?>>Archive</button>
+                            <button id="cancel-archive-logs" class="admin-button secondary archive-selection-cancel" type="button" hidden>Cancel</button>
+                        <?php endif; ?>
                         <nav id="audit-pagination" class="admin-pagination" aria-label="Audit log pages" hidden></nav>
                         <div class="audit-search-field">
-                            <label class="sr-only" for="audit-search">Search by User ID, Group Code, or Transaction Reference</label>
-                            <input id="audit-search" type="search" placeholder="Search by User ID, Group Code, or Txn Ref..." autocomplete="off" aria-controls="audit-rows" <?= $auditError !== '' ? 'disabled' : '' ?>>
+                            <label class="sr-only" for="audit-search">Search by user, group, transaction reference, or activity</label>
+                            <input id="audit-search" type="search" placeholder="Search by user, group, Txn Ref, or activity..." autocomplete="off" aria-controls="audit-rows" <?= $auditError !== '' ? 'disabled' : '' ?>>
                         </div>
                     </div>
                 </header>
                 <?php if ($auditError !== ''): ?><p class="admin-notice" role="alert"><?= adminH($auditError) ?></p><?php endif; ?>
-                <div class="audit-scroll" tabindex="0" role="region" aria-label="Global activity ledger">
+                <div class="audit-scroll" tabindex="0" role="region" aria-label="<?= $logView === 'archives' ? 'Archived activity ledger' : 'Global activity ledger' ?>">
                     <table class="audit-table">
-                        <caption class="sr-only">Read-only history of group and payment activity.</caption>
-                        <thead><tr><th scope="col">Timestamp</th><th scope="col">User ID</th><th scope="col">Group Code</th><th scope="col">Txn Ref</th><th scope="col">Activity</th><th scope="col">Details</th></tr></thead>
-                        <tbody id="audit-rows" data-available="<?= $auditError === '' ? 'true' : 'false' ?>">
+                        <caption class="sr-only"><?= $logView === 'archives' ? 'Archived system activity records.' : 'System activity records that have not been archived.' ?></caption>
+                        <thead><tr>
+                            <?php if ($logView === 'active'): ?><th scope="col" class="archive-select-column" hidden><input id="audit-select-page" type="checkbox" disabled><label for="audit-select-page">Select page</label></th><?php endif; ?>
+                            <th scope="col">Timestamp</th><th scope="col">User ID</th><th scope="col">Group Code</th><th scope="col">Txn Ref</th><th scope="col">Activity</th><th scope="col">Details</th>
+                            <?php if ($logView === 'archives'): ?><th scope="col">Archived On</th><th scope="col">Archived By</th><?php endif; ?>
+                        </tr></thead>
+                        <tbody id="audit-rows" data-available="<?= $auditError === '' ? 'true' : 'false' ?>" data-view="<?= adminH($logView) ?>">
                             <?php foreach ($auditLogs as $log): ?>
-                                <tr data-search="<?= adminH(implode(' ', [$log['actor_user_id'], $log['username'] ?? '', $log['group_code'] ?? '', $log['transaction_no'] ?? ''])) ?>">
+                                <tr data-search="<?= adminH(implode(' ', [$log['actor_user_id'], $log['username'] ?? '', $log['group_code'] ?? '', $log['transaction_no'] ?? '', $log['activity_type'], $log['details'] ?? '', $log['archived_by'] ?? ''])) ?>">
+                                    <?php if ($logView === 'active'): ?><td class="archive-select-column" hidden><input class="archive-row-select" type="checkbox" data-record-id="<?= (int) $log['log_id'] ?>" aria-label="Select log <?= (int) $log['log_id'] ?>: <?= adminH($log['activity_type']) ?>" disabled></td><?php endif; ?>
                                     <td class="audit-timestamp"><?= $log['timestamp'] ? adminH(date('m/d/Y h:i A', strtotime($log['timestamp']))) : '—' ?></td>
                                     <td class="audit-user" title="<?= adminH($log['username'] ?? '') ?>"><?= (int) $log['actor_user_id'] ?></td>
                                     <td class="audit-group"><?= adminH($log['group_code'] ?? '—') ?></td>
                                     <td class="audit-ref"><?= adminH(($log['transaction_no'] !== null && $log['transaction_no'] !== '') ? $log['transaction_no'] : '—') ?></td>
                                     <td><span class="audit-activity <?= adminActivityKind($log['activity_type']) ?>"><?= adminH($log['activity_type']) ?></span></td>
                                     <td><?= adminH($log['details'] ?? '—') ?></td>
+                                    <?php if ($logView === 'archives'): ?>
+                                        <td class="audit-timestamp"><?= adminH(date('m/d/Y h:i A', strtotime($log['archived_at']))) ?></td>
+                                        <td><?= adminH($log['archived_by'] ?? 'Admin') ?></td>
+                                    <?php endif; ?>
                                 </tr>
                             <?php endforeach; ?>
                         </tbody>
                     </table>
                 </div>
-                <p id="audit-empty" class="audit-empty" role="status" <?= $auditLogs || $auditError !== '' ? 'hidden' : '' ?>><?= $auditLogs ? 'No audit activity matches your search.' : 'No audit activity has been recorded yet.' ?></p>
-                <p id="audit-count" class="sr-only" role="status" aria-live="polite"><?= $auditError !== '' ? 'Audit count unavailable.' : count($auditLogs) . ' audit records shown.' ?></p>
+                <p id="audit-empty" class="audit-empty" role="status" <?= $auditLogs || $auditError !== '' ? 'hidden' : '' ?>><?= $auditLogs ? 'No audit activity matches your search.' : ($logView === 'archives' ? 'No audit logs have been archived yet.' : 'No audit activity has been recorded yet.') ?></p>
+                <p id="audit-count" class="sr-only" role="status" aria-live="polite"><?= $auditError !== '' ? 'Audit count unavailable.' : count($auditLogs) . ($logView === 'archives' ? ' archived audit records shown.' : ' audit records shown.') ?></p>
             </section>
             <?php endif; ?>
 
             <?php if ($adminView === 'total-groups'): ?>
             <section id="section-total-groups" class="admin-panel audit-panel" aria-labelledby="total-groups-heading">
-                <header class="audit-heading"><div><h2 id="total-groups-heading">Total Groups</h2><p>Every group currently recorded on the platform, including groups waiting to start</p></div></header>
+                <nav class="audit-tabs" aria-label="Group record views">
+                    <a href="admin.php?view=total-groups" class="audit-tab<?= $archiveView === 'active' ? ' active' : '' ?>"<?= $archiveView === 'active' ? ' aria-current="page"' : '' ?>>Logs</a>
+                    <a href="admin.php?view=total-groups&amp;archive_view=archives" class="audit-tab<?= $archiveView === 'archives' ? ' active' : '' ?>"<?= $archiveView === 'archives' ? ' aria-current="page"' : '' ?>>Archives</a>
+                </nav>
+                <header class="audit-heading"><div><h2 id="total-groups-heading"><?= $archiveView === 'archives' ? 'Archived Groups' : 'Total Groups' ?></h2><p><?= $archiveView === 'archives' ? 'Group records archived by administrators' : 'Every group currently recorded on the platform, including groups waiting to start' ?></p></div><?php if ($archiveView === 'active'): ?><div class="audit-tools"><button id="archive-selected-groups" class="admin-button secondary" type="button" <?= ($groupsError !== '' || !$allGroups) ? 'disabled' : '' ?>>Archive</button><button id="cancel-archive-groups" class="admin-button secondary archive-selection-cancel" type="button" hidden>Cancel</button></div><?php endif; ?></header>
                 <?php if ($groupsError !== ''): ?><p class="admin-notice" role="alert"><?= adminH($groupsError) ?></p><?php endif; ?>
-                <div class="audit-scroll" tabindex="0" role="region" aria-label="All platform groups">
+                <div class="audit-scroll" tabindex="0" role="region" aria-label="<?= $archiveView === 'archives' ? 'Archived platform groups' : 'All platform groups' ?>">
                     <table class="audit-table">
-                        <caption class="sr-only">All groups, their statuses, membership, and dates.</caption>
-                        <thead><tr><th scope="col">Group Name / ID</th><th scope="col">Group Code</th><th scope="col">Status</th><th scope="col">Members / Slots</th><th scope="col">Created</th><th scope="col">First Payment Due</th></tr></thead>
-                        <tbody>
+                        <caption class="sr-only"><?= $archiveView === 'archives' ? 'Archived groups and archive details.' : 'All groups, their statuses, membership, and dates.' ?></caption>
+                        <thead><tr><?php if ($archiveView === 'active'): ?><th scope="col" class="archive-select-column" hidden><input id="groups-select-page" type="checkbox" disabled><label for="groups-select-page">Select page</label></th><?php endif; ?><th scope="col">Group Name / ID</th><th scope="col">Group Code</th><th scope="col">Status</th><th scope="col">Members / Slots</th><th scope="col">Created</th><th scope="col">First Payment Due</th><?php if ($archiveView === 'archives'): ?><th scope="col">Archived On</th><th scope="col">Archived By</th><?php endif; ?></tr></thead>
+                        <tbody id="groups-archive-rows">
                             <?php foreach ($allGroups as $group): ?>
                                 <tr>
+                                    <?php if ($archiveView === 'active'): ?><td class="archive-select-column" hidden><input class="archive-row-select" type="checkbox" data-record-id="<?= (int) $group['group_id'] ?>" aria-label="Select group <?= adminH($group['group_name']) ?>" disabled></td><?php endif; ?>
                                     <td class="audit-user"><?= adminH($group['group_name']) ?><small class="table-subtext">ID: <?= (int) $group['group_id'] ?></small></td>
                                     <td class="audit-group"><?= adminH($group['group_code']) ?></td>
                                     <td><span class="status-pill"><?= adminH($group['group_status']) ?></span></td>
                                     <td><?= (int) $group['member_count'] ?> / <?= (int) $group['total_member_slots'] ?></td>
                                     <td><?= adminH(adminDateTime($group['created_at'])) ?></td>
                                     <td><?= adminH(adminDateTime($group['first_payment_due'])) ?></td>
+                                    <?php if ($archiveView === 'archives'): ?>
+                                        <td class="audit-timestamp"><?= adminH(adminDateTime($group['archived_at'])) ?></td>
+                                        <td><?= adminH($group['archived_by'] ?? 'Admin') ?></td>
+                                    <?php endif; ?>
                                 </tr>
                             <?php endforeach; ?>
-                            <?php if (!$allGroups && $groupsError === ''): ?><tr><td colspan="6" class="table-empty">No groups have been created yet.</td></tr><?php endif; ?>
+                            <?php if (!$allGroups && $groupsError === ''): ?><tr><td colspan="<?= $archiveView === 'archives' ? '8' : '6' ?>" data-base-colspan="<?= $archiveView === 'archives' ? '8' : '6' ?>" class="table-empty"><?= $archiveView === 'archives' ? 'No groups have been archived.' : 'No groups have been created yet.' ?></td></tr><?php endif; ?>
                         </tbody>
                     </table>
                 </div>
@@ -663,23 +979,32 @@ function adminActivityKind(string $activity): string
 
             <?php if ($adminView === 'completed-rounds'): ?>
             <section id="section-completed-rounds" class="admin-panel audit-panel" aria-labelledby="completed-rounds-heading">
-                <header class="audit-heading"><div><h2 id="completed-rounds-heading">Completed Rounds</h2><p>Rounds marked as paid out, with the recorded operator approval or disbursement time</p></div></header>
+                <nav class="audit-tabs" aria-label="Completed round views">
+                    <a href="admin.php?view=completed-rounds" class="audit-tab<?= $archiveView === 'active' ? ' active' : '' ?>"<?= $archiveView === 'active' ? ' aria-current="page"' : '' ?>>Logs</a>
+                    <a href="admin.php?view=completed-rounds&amp;archive_view=archives" class="audit-tab<?= $archiveView === 'archives' ? ' active' : '' ?>"<?= $archiveView === 'archives' ? ' aria-current="page"' : '' ?>>Archives</a>
+                </nav>
+                <header class="audit-heading"><div><h2 id="completed-rounds-heading"><?= $archiveView === 'archives' ? 'Archived Completed Rounds' : 'Completed Rounds' ?></h2><p><?= $archiveView === 'archives' ? 'Paid out rounds archived by administrators' : 'Rounds marked as paid out, with the recorded operator approval or disbursement time' ?></p></div><?php if ($archiveView === 'active'): ?><div class="audit-tools"><button id="archive-selected-rounds" class="admin-button secondary" type="button" <?= ($roundsError !== '' || !$completedRounds) ? 'disabled' : '' ?>>Archive</button><button id="cancel-archive-rounds" class="admin-button secondary archive-selection-cancel" type="button" hidden>Cancel</button></div><?php endif; ?></header>
                 <?php if ($roundsError !== ''): ?><p class="admin-notice" role="alert"><?= adminH($roundsError) ?></p><?php endif; ?>
-                <div class="audit-scroll" tabindex="0" role="region" aria-label="Completed group rounds">
+                <div class="audit-scroll" tabindex="0" role="region" aria-label="<?= $archiveView === 'archives' ? 'Archived completed group rounds' : 'Completed group rounds' ?>">
                     <table class="audit-table">
-                        <caption class="sr-only">Completed rounds for all groups.</caption>
-                        <thead><tr><th scope="col">Group Name / ID</th><th scope="col">Group Code</th><th scope="col">Round</th><th scope="col">Receiver</th><th scope="col">Completed Date &amp; Time</th></tr></thead>
-                        <tbody>
+                        <caption class="sr-only"><?= $archiveView === 'archives' ? 'Archived completed rounds and archive details.' : 'Completed rounds for all groups.' ?></caption>
+                        <thead><tr><?php if ($archiveView === 'active'): ?><th scope="col" class="archive-select-column" hidden><input id="rounds-select-page" type="checkbox" disabled><label for="rounds-select-page">Select page</label></th><?php endif; ?><th scope="col">Group Name / ID</th><th scope="col">Group Code</th><th scope="col">Round</th><th scope="col">Receiver</th><th scope="col">Completed Date &amp; Time</th><?php if ($archiveView === 'archives'): ?><th scope="col">Archived On</th><th scope="col">Archived By</th><?php endif; ?></tr></thead>
+                        <tbody id="rounds-archive-rows">
                             <?php foreach ($completedRounds as $round): ?>
                                 <tr>
+                                    <?php if ($archiveView === 'active'): ?><td class="archive-select-column" hidden><input class="archive-row-select" type="checkbox" data-record-id="<?= (int) $round['round_id'] ?>" aria-label="Select round <?= (int) $round['round_number'] ?> for <?= adminH($round['group_name']) ?>" disabled></td><?php endif; ?>
                                     <td class="audit-user"><?= adminH($round['group_name']) ?><small class="table-subtext">ID: <?= (int) $round['group_id'] ?></small></td>
                                     <td class="audit-group"><?= adminH($round['group_code']) ?></td>
                                     <td>Round <?= (int) $round['round_number'] ?></td>
                                     <td><?= adminH($round['receiver_name']) ?></td>
                                     <td class="audit-timestamp"><?= adminH(adminDateTime($round['completed_at'])) ?></td>
+                                    <?php if ($archiveView === 'archives'): ?>
+                                        <td class="audit-timestamp"><?= adminH(adminDateTime($round['archived_at'])) ?></td>
+                                        <td><?= adminH($round['archived_by'] ?? 'Admin') ?></td>
+                                    <?php endif; ?>
                                 </tr>
                             <?php endforeach; ?>
-                            <?php if (!$completedRounds && $roundsError === ''): ?><tr><td colspan="5" class="table-empty">No rounds have been completed yet.</td></tr><?php endif; ?>
+                            <?php if (!$completedRounds && $roundsError === ''): ?><tr><td colspan="<?= $archiveView === 'archives' ? '7' : '5' ?>" data-base-colspan="<?= $archiveView === 'archives' ? '7' : '5' ?>" class="table-empty"><?= $archiveView === 'archives' ? 'No completed rounds have been archived.' : 'No rounds have been completed yet.' ?></td></tr><?php endif; ?>
                         </tbody>
                     </table>
                 </div>
@@ -781,12 +1106,23 @@ function adminActivityKind(string $activity): string
         <input type="hidden" name="moderation_action" id="moderation-action">
         <input type="hidden" name="user_id" id="moderation-user">
         <input type="hidden" name="group_id" id="moderation-group">
+        <input type="hidden" name="round_id" id="moderation-round">
         <input type="hidden" name="expected_status" id="moderation-status">
+        <input type="hidden" name="ban_reason" id="moderation-ban-reason">
+        <input type="hidden" name="log_id" id="moderation-log">
+        <input type="hidden" name="log_ids" id="moderation-log-ids">
+        <input type="hidden" name="group_ids" id="moderation-group-ids">
+        <input type="hidden" name="round_ids" id="moderation-round-ids">
     </form>
     <dialog id="admin-confirm" class="admin-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-description">
         <form id="confirm-form" method="dialog">
             <span class="dialog-mark" aria-hidden="true">!</span>
             <h2 id="confirm-title"></h2><p id="confirm-description"></p>
+            <div class="ban-reason-field" id="ban-reason-field" hidden>
+                <label for="ban-reason-input">Reason for ban</label>
+                <textarea id="ban-reason-input" maxlength="500" rows="4" aria-describedby="ban-reason-help" placeholder="Explain why this user is being banned."></textarea>
+                <small id="ban-reason-help">The user will see this message when they try to sign in.</small>
+            </div>
             <div class="dialog-actions"><button class="admin-button secondary" id="cancel-action" type="button" autofocus>Cancel</button><button class="admin-button" id="confirm-action" type="submit">Confirm</button></div>
         </form>
     </dialog>

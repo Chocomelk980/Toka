@@ -18,6 +18,11 @@ $coopCandidatesByGroup = [];
 $loadError = '';
 $pdo = null;
 $success = $_SESSION['group_success'] ?? '';
+$showSuccessPopup = in_array($success, [
+    'Group created successfully.',
+    'Co-operator selected successfully.',
+    'Group started and moved to Active Groups.',
+], true);
 unset($_SESSION['group_success']);
 
 $userId = (int) ($_SESSION['user']['user_id'] ?? 0);
@@ -133,7 +138,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $userId > 0) {
                             $joinModal = ['type' => 'error', 'message' => 'This group could not be started. Refresh the page and try again.'];
                         } else {
                             $stmt = $pdo->prepare(
-                                'SELECT member_id, role FROM group_members WHERE group_id = :group_id ORDER BY assigned_slot_number'
+                                'SELECT gm.member_id, gm.role, u.trust_score
+                                 FROM group_members gm JOIN users u ON u.user_id = gm.user_id
+                                 WHERE gm.group_id = :group_id
+                                 ORDER BY gm.assigned_slot_number FOR UPDATE'
                             );
                             $stmt->execute([':group_id' => $startGroupId]);
                             $cycleMembers = $stmt->fetchAll();
@@ -473,6 +481,9 @@ foreach ($groups as $group) {
         $completedCount++;
     }
 }
+$selectedGroupCount = $selectedTab === 'Active'
+    ? $activeCount
+    : ($selectedTab === 'Waiting' ? $waitingCount : $completedCount);
 ?>
 
 <!DOCTYPE html>
@@ -544,23 +555,14 @@ foreach ($groups as $group) {
                 </form>
             </section>
 
-            <?php if ($success !== ''): ?>
+            <?php if ($success !== '' && !$showSuccessPopup): ?>
                 <div class="group-message group-success" role="status"><?= htmlspecialchars($success) ?></div>
             <?php endif; ?>
             <?php if ($loadError !== ''): ?>
                 <div class="group-message group-error" role="alert"><?= htmlspecialchars($loadError) ?></div>
             <?php endif; ?>
 
-            <?php if (empty($groups) && $loadError === ''): ?>
-                <section class="empty-state">
-                    <img src="../assets/Empty(icon).svg" alt="No groups" class="empty-icon">
-                    <p class="empty-message">
-                        Hmm... It looks like you have no
-                        <br>
-                        outgoing activities.
-                    </p>
-                </section>
-            <?php elseif ($groups): ?>
+            <?php if ($loadError === ''): ?>
                 <section class="summary-grid">
                     <button type="button" class="summary-card active-card" data-status="Active" aria-pressed="<?= $selectedTab === 'Active' ? 'true' : 'false' ?>">
                         <div class="summary-number"><?= $activeCount ?></div>
@@ -580,7 +582,18 @@ foreach ($groups as $group) {
 
                 <section class="group-list">
                     <?php foreach ($groups as $group): ?>
-                        <article class="group-card" data-status="<?= htmlspecialchars($group['status']) ?>"<?= $group['status'] !== $selectedTab ? ' style="display: none;"' : '' ?><?= $group['status'] === 'Active' ? ' data-group-url="group_dashboard.php?id=' . (int) $group['group_id'] . '" role="link" tabindex="0" aria-label="' . htmlspecialchars('Open group ' . $group['name'], ENT_QUOTES, 'UTF-8') . '"' : '' ?>>
+                        <?php $canStartGroup = $group['viewer_role'] === 'Main Operator'
+                            && $group['status'] === 'Waiting'
+                            && (int) $group['members'] === (int) $group['capacity']
+                            && $group['has_co_op']
+                            && (int) $group['cycle_rounds'] === 0; ?>
+                        <?php $canSelectCoop = !$canStartGroup
+                            && $group['viewer_role'] === 'Main Operator'
+                            && !$group['has_co_op']
+                            && $group['group_status'] === 'Waiting'
+                            && (int) $group['cycle_rounds'] === 0
+                            && (int) $group['members'] >= (int) $group['capacity']; ?>
+                        <article class="group-card" data-status="<?= htmlspecialchars($group['status']) ?>"<?= $group['status'] !== $selectedTab ? ' style="display: none;"' : '' ?> data-group-url="group_dashboard.php?id=<?= (int) $group['group_id'] ?>" role="link" tabindex="0" aria-label="<?= htmlspecialchars('Open group ' . $group['name'], ENT_QUOTES, 'UTF-8') ?>">
                             <div class="group-info">
                                 <div class="group-heading">
                                     <h2><?= htmlspecialchars($group['name']) ?></h2>
@@ -595,6 +608,45 @@ foreach ($groups as $group) {
                                     <span><i class="fa-solid fa-peso-sign"></i> <?= htmlspecialchars($group['amount']) ?></span>
                                     <span><i class="fa-regular fa-clock"></i> <?= htmlspecialchars($group['schedule']) ?></span>
                                 </div>
+                                <?php if ($canStartGroup || $canSelectCoop): ?>
+                                    <div class="group-management-actions">
+                                        <?php if ($canStartGroup): ?>
+                                            <form method="post" action="my_groups.php?tab=Waiting" class="start-group-form">
+                                                <input type="hidden" name="join_form_token" value="<?= htmlspecialchars($joinToken) ?>">
+                                                <input type="hidden" name="join_action" value="start_group">
+                                                <input type="hidden" name="group_id" value="<?= (int) $group['group_id'] ?>">
+                                                <button type="submit" class="view-button start-button">Start</button>
+                                            </form>
+                                        <?php elseif ($canSelectCoop): ?>
+                                            <?php $coopDialogId = 'select-coop-' . (int) $group['group_id']; ?>
+                                            <button type="button" class="coop-select-button" data-open-coop="<?= htmlspecialchars($coopDialogId) ?>">Select Co-op</button>
+                                            <dialog class="coop-dialog" id="<?= htmlspecialchars($coopDialogId) ?>">
+                                                <h2>Ready to select<br>Co-operator?</h2>
+                                                <form method="post" action="my_groups.php">
+                                                    <input type="hidden" name="join_form_token" value="<?= htmlspecialchars($joinToken) ?>">
+                                                    <input type="hidden" name="join_action" value="assign_coop">
+                                                    <input type="hidden" name="group_id" value="<?= (int) $group['group_id'] ?>">
+                                                    <label for="coop-member-<?= (int) $group['group_id'] ?>">Choose from Members</label>
+                                                    <select id="coop-member-<?= (int) $group['group_id'] ?>" name="coop_user_id" required <?= empty($coopCandidatesByGroup[(int) $group['group_id']]) ? 'disabled' : '' ?>>
+                                                        <?php if (empty($coopCandidatesByGroup[(int) $group['group_id']])): ?>
+                                                            <option value="" selected>No members available</option>
+                                                        <?php else: ?>
+                                                            <option value="" selected disabled>Choose a member</option>
+                                                            <?php foreach ($coopCandidatesByGroup[(int) $group['group_id']] as $candidate): ?>
+                                                                <option value="<?= (int) $candidate['user_id'] ?>"><?= htmlspecialchars($candidate['username']) ?></option>
+                                                            <?php endforeach; ?>
+                                                        <?php endif; ?>
+                                                    </select>
+                                                    <p class="coop-note">NOTE: You cannot change your Co-operator once the cycle starts.</p>
+                                                    <div class="coop-modal-actions">
+                                                        <button type="button" class="coop-back-button" data-close-coop>Back</button>
+                                                        <button type="submit" class="coop-confirm-button" <?= empty($coopCandidatesByGroup[(int) $group['group_id']]) ? 'disabled' : '' ?>>Confirm</button>
+                                                    </div>
+                                                </form>
+                                            </dialog>
+                                        <?php endif; ?>
+                                    </div>
+                                <?php endif; ?>
                             </div>
 
                             <div class="capacity">
@@ -609,68 +661,26 @@ foreach ($groups as $group) {
                             </div>
                         </div>
 
-                        <?php if ($group['status'] !== 'Active'): ?>
-                            <div class="group-action">
-                                <?php $canStartGroup = $group['viewer_role'] === 'Main Operator'
-                                    && $group['status'] === 'Waiting'
-                                    && (int) $group['members'] === (int) $group['capacity']
-                                    && $group['has_co_op']
-                                    && (int) $group['cycle_rounds'] === 0; ?>
-                                <?php if ($canStartGroup): ?>
-                                    <form method="post" action="my_groups.php?tab=Waiting" class="start-group-form">
-                                        <input type="hidden" name="join_form_token" value="<?= htmlspecialchars($joinToken) ?>">
-                                        <input type="hidden" name="join_action" value="start_group">
-                                        <input type="hidden" name="group_id" value="<?= (int) $group['group_id'] ?>">
-                                        <button type="submit" class="view-button start-button">Start</button>
-                                    </form>
-                                <?php else: ?>
-                                    <a href="group_dashboard.php?id=<?= (int) $group['group_id'] ?>" class="view-button">View Group</a>
-                                <?php endif; ?>
-                                <?php if (!$canStartGroup && $group['viewer_role'] === 'Main Operator'
-                                    && !$group['has_co_op']
-                                    && $group['group_status'] === 'Waiting'
-                                    && (int) $group['cycle_rounds'] === 0): ?>
-                                    <?php if ((int) $group['members'] < (int) $group['capacity']): ?>
-                                        <button type="button" class="coop-select-button coop-waiting-button" disabled title="Available when every group slot is filled">Waiting</button>
-                                    <?php else: ?>
-                                        <?php $coopDialogId = 'select-coop-' . (int) $group['group_id']; ?>
-                                        <button type="button" class="coop-select-button" data-open-coop="<?= htmlspecialchars($coopDialogId) ?>">Select Co-op</button>
-                                        <dialog class="coop-dialog" id="<?= htmlspecialchars($coopDialogId) ?>">
-                                            <h2>Ready to select<br>Co-operator?</h2>
-                                            <form method="post" action="my_groups.php">
-                                                <input type="hidden" name="join_form_token" value="<?= htmlspecialchars($joinToken) ?>">
-                                                <input type="hidden" name="join_action" value="assign_coop">
-                                                <input type="hidden" name="group_id" value="<?= (int) $group['group_id'] ?>">
-                                                <label for="coop-member-<?= (int) $group['group_id'] ?>">Choose from Members</label>
-                                                <select id="coop-member-<?= (int) $group['group_id'] ?>" name="coop_user_id" required <?= empty($coopCandidatesByGroup[(int) $group['group_id']]) ? 'disabled' : '' ?>>
-                                                    <?php if (empty($coopCandidatesByGroup[(int) $group['group_id']])): ?>
-                                                        <option value="" selected>No members available</option>
-                                                    <?php else: ?>
-                                                        <option value="" selected disabled>Choose a member</option>
-                                                        <?php foreach ($coopCandidatesByGroup[(int) $group['group_id']] as $candidate): ?>
-                                                            <option value="<?= (int) $candidate['user_id'] ?>"><?= htmlspecialchars($candidate['username']) ?></option>
-                                                        <?php endforeach; ?>
-                                                    <?php endif; ?>
-                                                </select>
-                                                <p class="coop-note">NOTE: You cannot change your Co-operator once the cycle starts.</p>
-                                                <div class="coop-modal-actions">
-                                                    <button type="button" class="coop-back-button" data-close-coop>Back</button>
-                                                    <button type="submit" class="coop-confirm-button" <?= empty($coopCandidatesByGroup[(int) $group['group_id']]) ? 'disabled' : '' ?>>Confirm</button>
-                                                </div>
-                                            </form>
-                                        </dialog>
-                                    <?php endif; ?>
-                                <?php endif; ?>
-                            </div>
-                        <?php endif; ?>
                     </article>
                 <?php endforeach; ?>
+                    <section class="empty-state" id="group-empty-state"<?= $selectedGroupCount > 0 ? ' hidden' : '' ?>>
+                        <img src="../assets/Empty(icon).svg" alt="No groups in this category" class="empty-icon">
+                        <p class="empty-message" id="group-empty-message">
+                            Hmm... It looks like you have no <?= htmlspecialchars(strtolower($selectedTab)) ?> groups.
+                        </p>
+                    </section>
                 </section>
             <?php endif; ?>
         </main>
     </div>
 
-    
+            <?php if ($showSuccessPopup): ?>
+                <dialog class="join-dialog group-created-dialog" id="group-created-dialog" aria-labelledby="group-created-message">
+                    <p class="group-created-message" id="group-created-message" role="status"><?= htmlspecialchars($success) ?></p>
+                    <div class="join-modal-actions"><button type="button" class="join-confirm-button" data-close-group-created>OK</button></div>
+                </dialog>
+            <?php endif; ?>
+
             <?php if ($joinModal !== null): ?>
                 <dialog class="join-dialog" data-join-modal="<?= htmlspecialchars($joinModal['type']) ?>">
                     <?php if ($joinModal['type'] === 'preview' || $joinModal['type'] === 'waiting'): ?>
@@ -737,7 +747,7 @@ foreach ($groups as $group) {
             });
         });
 
-        const joinModal = document.querySelector('.join-dialog');
+        const joinModal = document.querySelector('.join-dialog:not(.group-created-dialog)');
         if (joinModal) joinModal.showModal();
         joinModal?.querySelectorAll('[data-close-join]').forEach(button => {
             button.addEventListener('click', () => {
@@ -754,6 +764,10 @@ foreach ($groups as $group) {
                 joinModal.remove();
             });
         });
+
+        const groupCreatedDialog = document.getElementById('group-created-dialog');
+        if (groupCreatedDialog) groupCreatedDialog.showModal();
+        groupCreatedDialog?.querySelector('[data-close-group-created]')?.addEventListener('click', () => groupCreatedDialog.close());
         joinModal?.addEventListener('click', event => {
             if (event.target === joinModal) {
                 joinModal.close();
@@ -763,16 +777,18 @@ foreach ($groups as $group) {
 
         const summaryCards = document.querySelectorAll(".summary-card");
         const cards = document.querySelectorAll(".group-card");
+        const groupEmptyState = document.getElementById("group-empty-state");
+        const groupEmptyMessage = document.getElementById("group-empty-message");
 
         document.querySelectorAll(".group-card[data-group-url]").forEach(groupCard => {
             groupCard.addEventListener("click", event => {
                 if (event.target.closest("a, button, input, select, textarea, dialog")) return;
-                window.location.href = groupCard.dataset.groupUrl;
+                window.tokaTabNavigate(groupCard.dataset.groupUrl);
             });
             groupCard.addEventListener("keydown", event => {
-                if (event.key === "Enter") {
+                if (event.key === "Enter" && !event.target.closest("a, button, input, select, textarea, dialog")) {
                     event.preventDefault();
-                    window.location.href = groupCard.dataset.groupUrl;
+                    window.tokaTabNavigate(groupCard.dataset.groupUrl);
                 }
             });
         });
@@ -794,6 +810,13 @@ foreach ($groups as $group) {
                         card.classList.remove("animate-in");
                     }
                 });
+                if (groupEmptyState) {
+                    const hasGroupsForStatus = Array.from(cards).some(card => card.dataset.status === selectedStatus);
+                    groupEmptyState.hidden = hasGroupsForStatus;
+                    if (groupEmptyMessage) {
+                        groupEmptyMessage.textContent = `Hmm... It looks like you have no ${selectedStatus.toLowerCase()} groups.`;
+                    }
+                }
             });
         });
 

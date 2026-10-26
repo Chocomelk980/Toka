@@ -16,8 +16,9 @@ $tabAuthRequired = $signedInUser !== null || isset($_GET['tab_auth_required']);
 if ($tabAuthRequired && $error === '') $error = 'Please log in to start a session in this tab.';
 $success = $_SESSION['auth_success'] ?? '';
 $bannedLogin = !empty($_SESSION['auth_banned_login']);
+$banReason = is_string($_SESSION['auth_ban_reason'] ?? null) ? trim($_SESSION['auth_ban_reason']) : '';
 unset($_SESSION['auth_error'], $_SESSION['auth_success'], $_SESSION['auth_banned_login'],
-    $_SESSION['auth_error_fields'], $_SESSION['auth_old_input']);
+    $_SESSION['auth_ban_reason'], $_SESSION['auth_error_fields'], $_SESSION['auth_old_input']);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -104,18 +105,22 @@ unset($_SESSION['auth_error'], $_SESSION['auth_success'], $_SESSION['auth_banned
     </main>
 
     <?php if ($bannedLogin): ?>
-        <dialog id="banned-login-dialog" class="auth-dialog" aria-labelledby="banned-login-title" aria-describedby="banned-login-message">
+        <dialog id="banned-login-dialog" class="auth-dialog banned-login-dialog" aria-labelledby="banned-login-title" aria-describedby="banned-login-message">
             <form method="dialog">
                 <span class="auth-dialog-mark" aria-hidden="true">!</span>
                 <h2 id="banned-login-title">Account banned</h2>
                 <p id="banned-login-message"><?= htmlspecialchars(TOKA_BANNED_LOGIN_MESSAGE, ENT_QUOTES, 'UTF-8') ?></p>
+                <?php if ($banReason !== ''): ?>
+                    <div class="auth-ban-reason"><strong>Reason</strong><p><?= htmlspecialchars($banReason, ENT_QUOTES, 'UTF-8') ?></p></div>
+                <?php endif; ?>
                 <div class="auth-dialog-actions"><button type="submit" autofocus>OK</button></div>
             </form>
         </dialog>
-        <noscript><p class="alert error" role="alert"><?= htmlspecialchars(TOKA_BANNED_LOGIN_MESSAGE, ENT_QUOTES, 'UTF-8') ?></p></noscript>
+        <noscript><p class="alert error" role="alert"><?= htmlspecialchars(TOKA_BANNED_LOGIN_MESSAGE, ENT_QUOTES, 'UTF-8') ?><?php if ($banReason !== ''): ?> Reason: <?= htmlspecialchars($banReason, ENT_QUOTES, 'UTF-8') ?><?php endif; ?></p></noscript>
     <?php endif; ?>
 
     <script>
+        document.getElementById('banned-login-dialog')?.showModal();
         document.querySelector('.field.has-error input')?.focus({ preventScroll: true });
 
         const authForm = document.querySelector('.auth-form');

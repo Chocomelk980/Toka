@@ -3,6 +3,7 @@ session_start();
 require_once __DIR__ . '/../LOGIN_PAGE/access.php';
 tokaRequireRole();
 require_once __DIR__ . '/../LOGIN_PAGE/dbconnect.php';
+require_once __DIR__ . '/audit_archive_helpers.php';
 
 if (!isset($_SESSION['user']) || (int) ($_SESSION['user']['user_id'] ?? 0) < 1) {
     header('Location: ../LOGIN_PAGE/index.php');
@@ -38,6 +39,7 @@ function logCsvValue($value): string
 if ($groupId) {
     try {
         $pdo = getDbConnection();
+        tokaEnsureAuditArchiveTable($pdo);
         $stmt = $pdo->prepare(
             'SELECT pg.group_id, pg.group_name
              FROM paluwagan_groups pg
@@ -57,13 +59,18 @@ if ($groupId) {
                  LEFT JOIN users u ON u.user_id = al.actor_user_id
                  LEFT JOIN group_members gm ON gm.group_id = al.group_id AND gm.user_id = al.actor_user_id
                  WHERE al.group_id = :group_id
+                   AND NOT EXISTS (SELECT 1 FROM audit_log_archives ala WHERE ala.log_id = al.log_id)
                  ORDER BY al.timestamp DESC, al.log_id DESC';
 
             if ($isCsvExport) {
                 $stmt = $pdo->prepare($logsQuery);
                 $stmt->execute([':group_id' => $groupId]);
             } else {
-                $stmt = $pdo->prepare('SELECT COUNT(*) FROM audit_logs WHERE group_id = :group_id');
+                $stmt = $pdo->prepare(
+                    'SELECT COUNT(*) FROM audit_logs al
+                     WHERE al.group_id = :group_id
+                       AND NOT EXISTS (SELECT 1 FROM audit_log_archives ala WHERE ala.log_id = al.log_id)'
+                );
                 $stmt->execute([':group_id' => $groupId]);
                 $totalLogCount = (int) $stmt->fetchColumn();
                 $totalPages = max(1, (int) ceil($totalLogCount / $logsPerPage));

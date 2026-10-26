@@ -100,6 +100,21 @@ function tokaHome(array $user, bool $fromProjectRoot = false): string
     return $dashboardPath . (tokaIsAdmin($user) ? 'admin.php' : 'my_groups.php');
 }
 
+function tokaEnforceTrustScoreBan(PDO $pdo, array &$user): void
+{
+    if ((int) $user['trust_score'] > 0 || $user['account_status'] === 'Banned') return;
+
+    $pdo->prepare(
+        'UPDATE users SET account_status = :status, ban_reason = :reason
+         WHERE user_id = :user_id AND trust_score <= 0 AND account_status <> :banned'
+    )->execute([
+        ':status' => 'Banned', ':reason' => 'Trust score too low.',
+        ':user_id' => (int) $user['user_id'], ':banned' => 'Banned',
+    ]);
+    $user['account_status'] = 'Banned';
+    $user['ban_reason'] = 'Trust score too low.';
+}
+
 function tokaCurrentUser(): ?array
 {
     if (session_status() !== PHP_SESSION_ACTIVE) session_start();
@@ -107,12 +122,14 @@ function tokaCurrentUser(): ?array
     if ($userId < 1) return null;
 
     try {
-        $stmt = getDbConnection()->prepare(
-            'SELECT user_id, username, email, trust_score, is_admin, account_status
+        $pdo = getDbConnection();
+        $stmt = $pdo->prepare(
+            'SELECT user_id, username, email, trust_score, is_admin, account_status, ban_reason
              FROM users WHERE user_id = :user_id LIMIT 1'
         );
         $stmt->execute([':user_id' => $userId]);
         $user = $stmt->fetch();
+        if ($user) tokaEnforceTrustScoreBan($pdo, $user);
     } catch (PDOException $e) {
         error_log('Account access check failed: ' . $e->getMessage());
         http_response_code(503);
@@ -121,9 +138,14 @@ function tokaCurrentUser(): ?array
     }
 
     if (!$user || $user['account_status'] !== 'Active') {
+        $isBanned = $user && $user['account_status'] === 'Banned';
+        $banReason = $isBanned && is_string($user['ban_reason'] ?? null)
+            ? trim($user['ban_reason'])
+            : '';
         $_SESSION = [];
         session_regenerate_id(true);
-        $_SESSION['auth_banned_login'] = $user && $user['account_status'] === 'Banned';
+        $_SESSION['auth_banned_login'] = $isBanned;
+        if ($isBanned) $_SESSION['auth_ban_reason'] = $banReason;
         $_SESSION['auth_error'] = $_SESSION['auth_banned_login']
             ? TOKA_BANNED_LOGIN_MESSAGE : 'Please sign in with an active account.';
         return null;

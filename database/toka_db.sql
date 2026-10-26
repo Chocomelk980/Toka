@@ -1,6 +1,6 @@
 -- Canonical database setup for TOKAV2. Import this file only; no separate
 -- migration scripts are required.
--- Includes cycle claim approval, user full names, expanded group options,
+-- Includes cycle claim approval, user full names and ban reasons, expanded group options,
 -- and freeze poll membership/outcome tracking.
 -- This is a fresh-install/reset script: importing it replaces the tables
 -- and their data with the schema and seed data below.
@@ -49,6 +49,7 @@ CREATE TABLE users (
     trust_score INT NOT NULL DEFAULT 100,
     is_admin BOOLEAN NOT NULL DEFAULT FALSE,
     account_status ENUM('Active', 'Suspended', 'Banned', 'Action Needed') NOT NULL DEFAULT 'Active',
+    ban_reason VARCHAR(500) NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id),
     UNIQUE KEY uq_users_username (username),
@@ -272,6 +273,57 @@ CREATE TABLE audit_logs (
         ON UPDATE CASCADE,
     CONSTRAINT fk_audit_logs_actor
         FOREIGN KEY (actor_user_id) REFERENCES users(user_id)
+        ON DELETE RESTRICT
+        ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE audit_log_archives (
+    log_id INT NOT NULL,
+    archived_by INT NOT NULL,
+    archived_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (log_id),
+    KEY idx_audit_log_archives_archived_by (archived_by),
+    KEY idx_audit_log_archives_archived_at (archived_at),
+    CONSTRAINT fk_audit_log_archives_log
+        FOREIGN KEY (log_id) REFERENCES audit_logs(log_id)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE,
+    CONSTRAINT fk_audit_log_archives_admin
+        FOREIGN KEY (archived_by) REFERENCES users(user_id)
+        ON DELETE RESTRICT
+        ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE group_archives (
+    group_id INT NOT NULL,
+    archived_by INT NOT NULL,
+    archived_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (group_id),
+    KEY idx_group_archives_archived_by (archived_by),
+    KEY idx_group_archives_archived_at (archived_at),
+    CONSTRAINT fk_group_archives_group
+        FOREIGN KEY (group_id) REFERENCES paluwagan_groups(group_id)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE,
+    CONSTRAINT fk_group_archives_admin
+        FOREIGN KEY (archived_by) REFERENCES users(user_id)
+        ON DELETE RESTRICT
+        ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE round_archives (
+    round_id INT NOT NULL,
+    archived_by INT NOT NULL,
+    archived_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (round_id),
+    KEY idx_round_archives_archived_by (archived_by),
+    KEY idx_round_archives_archived_at (archived_at),
+    CONSTRAINT fk_round_archives_round
+        FOREIGN KEY (round_id) REFERENCES round_schedules(round_id)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE,
+    CONSTRAINT fk_round_archives_admin
+        FOREIGN KEY (archived_by) REFERENCES users(user_id)
         ON DELETE RESTRICT
         ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
