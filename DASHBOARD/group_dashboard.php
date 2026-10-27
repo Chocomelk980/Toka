@@ -128,7 +128,7 @@ function actionButton(string $label, bool $enabled, string $action, string $toke
 if ($groupId) {
     try {
         $pdo = getDbConnection();
-        tokaEnsureAuditArchiveTable($pdo);
+        tokaEnsureAdminArchiveTables($pdo);
         $stmt = $pdo->prepare(
             'SELECT pg.*, gm.role AS viewer_role,
                     (SELECT COUNT(*) FROM group_members m WHERE m.group_id = pg.group_id) AS member_count
@@ -182,7 +182,7 @@ if ($groupId) {
                 && count($members) === (int) $group['total_member_slots']) {
                 $pdo->beginTransaction();
                 $stmt = $pdo->prepare(
-                    'SELECT group_status, total_member_slots, first_payment_due, payment_frequency
+                    'SELECT group_status, total_member_slots, first_payment_due, payment_frequency, created_at
                      FROM paluwagan_groups WHERE group_id = :group_id FOR UPDATE'
                 );
                 $stmt->execute([':group_id' => $groupId]);
@@ -200,7 +200,14 @@ if ($groupId) {
                     $stmt->execute([':group_id' => $groupId]);
                     $cycleMembers = $stmt->fetchAll();
                     if (count($cycleMembers) === (int) $lockedGroup['total_member_slots']) {
-                        $firstDue = new DateTimeImmutable($lockedGroup['first_payment_due']);
+                        $firstDue = tokaCycleFirstDueAfterWaiting(
+                            $lockedGroup['created_at'], $lockedGroup['first_payment_due']
+                        );
+                        $pdo->prepare(
+                            'UPDATE paluwagan_groups SET first_payment_due = :first_due WHERE group_id = :group_id'
+                        )->execute([
+                            ':first_due' => $firstDue->format('Y-m-d H:i:s'), ':group_id' => $groupId,
+                        ]);
                         tokaCreateCycleRounds($pdo, $groupId, $cycleMembers, $firstDue, $lockedGroup['payment_frequency']);
                     }
                 }
@@ -551,9 +558,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $group && $loadError === '') {
         if ($group['group_status'] !== 'Active' || !$currentRound
             || $currentRound['round_status'] !== 'Ongoing' || $hasDisbursed || $receiptClaimed) {
             $actionMessage = 'Payments can only be submitted during an active, undistributed round.';
-        } elseif (!$channelId || $paymentFormState['transaction_no'] === ''
-            || strlen($paymentFormState['transaction_no']) > 100) {
-            $actionMessage = 'Choose a payment channel and enter a transaction number (up to 100 characters).';
+        } elseif (!$channelId) {
+            $actionMessage = 'Choose a payment channel.';
+        } elseif (!preg_match('/\A[0-9]{1,16}\z/', $paymentFormState['transaction_no'])) {
+            $actionMessage = 'Transaction number must contain only digits and be no longer than 16 digits.';
         } else {
             try {
                 $pdo->beginTransaction();
@@ -1055,7 +1063,9 @@ if ($currentRound) {
     }
 }
 $collectionPercent = $roundExpected > 0 ? min(100, (int) round(100 * $roundCollected / $roundExpected)) : 0;
-$dueAt = $currentRound['target_deadline'] ?? $group['first_payment_due'] ?? null;
+$dueAt = $groupStatus === 'Waiting'
+    ? null
+    : ($currentRound['target_deadline'] ?? $group['first_payment_due'] ?? null);
 $daysUntilDue = null;
 if ($dueAt) {
     try {
@@ -1151,7 +1161,7 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                     </p>
                 </div>
                 <div class="round-meta">
-                    <div><span>Due:</span><strong><?= $daysUntilDue === null ? 'Not set' : ($daysUntilDue < 0 ? 'Overdue' : 'in ' . $daysUntilDue . ' day' . ($daysUntilDue === 1 ? '' : 's')) ?></strong></div>
+                    <div><span>Due:</span><strong><?= $groupStatus === 'Waiting' ? 'On hold' : ($daysUntilDue === null ? 'Not set' : ($daysUntilDue < 0 ? 'Overdue' : 'in ' . $daysUntilDue . ' day' . ($daysUntilDue === 1 ? '' : 's'))) ?></strong></div>
                     <?php if ($paymentGraceDeadline): ?>
                         <div><span>Payment window ends:</span><strong><?= h($paymentGraceDeadline->format('M j, Y g:i A')) ?></strong></div>
                     <?php endif; ?>
@@ -1558,7 +1568,9 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
                             </select>
                         </label>
                         <label>Transaction No.
-                            <input type="text" name="transaction_no" autocomplete="off" maxlength="100" required
+                            <input id="transaction-number-input" type="text" name="transaction_no" autocomplete="off"
+                                   inputmode="numeric" pattern="[0-9]{1,16}" maxlength="16" required
+                                   title="Enter up to 16 digits."
                                    placeholder="Enter Transaction No."
                                    value="<?= h($paymentFormState['transaction_no']) ?>">
                         </label>
@@ -1681,6 +1693,14 @@ $statusVerified = ($currentMember['account_status'] ?? '') === 'Active';
     });
 
     const paymentDialog = document.getElementById('payment-dialog');
+    const transactionNumberInput = document.getElementById('transaction-number-input');
+    const keepTransactionDigits = () => {
+        if (transactionNumberInput) {
+            transactionNumberInput.value = transactionNumberInput.value.replace(/\D/g, '').slice(0, 16);
+        }
+    };
+    keepTransactionDigits();
+    transactionNumberInput?.addEventListener('input', keepTransactionDigits);
     document.querySelector('[data-open-payment]')?.addEventListener('click', () => paymentDialog?.showModal());
     paymentDialog?.querySelectorAll('[data-close-payment]').forEach(button => {
         button.addEventListener('click', () => paymentDialog.close());

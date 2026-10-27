@@ -39,7 +39,7 @@ function logCsvValue($value): string
 if ($groupId) {
     try {
         $pdo = getDbConnection();
-        tokaEnsureAuditArchiveTable($pdo);
+        tokaEnsureAdminArchiveTables($pdo);
         $stmt = $pdo->prepare(
             'SELECT pg.group_id, pg.group_name
              FROM paluwagan_groups pg

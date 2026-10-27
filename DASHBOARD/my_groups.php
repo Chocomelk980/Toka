@@ -88,7 +88,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $userId > 0) {
                 } else {
                     $pdo->beginTransaction();
                     $stmt = $pdo->prepare(
-                        'SELECT group_status, total_member_slots, first_payment_due, payment_frequency
+                        'SELECT group_status, total_member_slots, first_payment_due, payment_frequency, created_at
                          FROM paluwagan_groups WHERE group_id = :group_id FOR UPDATE'
                     );
                     $stmt->execute([':group_id' => $startGroupId]);
@@ -126,12 +126,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $userId > 0) {
                         $pdo->rollBack();
                         $joinModal = ['type' => 'error', 'message' => 'Fill every group slot and select a Co-operator before starting.'];
                     } else {
+                        $firstDue = tokaCycleFirstDueAfterWaiting(
+                            $lockedGroup['created_at'], $lockedGroup['first_payment_due']
+                        );
                         $stmt = $pdo->prepare(
-                            'UPDATE paluwagan_groups SET group_status = :active
+                            'UPDATE paluwagan_groups SET group_status = :active, first_payment_due = :first_due
                              WHERE group_id = :group_id AND group_status = :waiting'
                         );
                         $stmt->execute([
-                            ':active' => 'Active', ':group_id' => $startGroupId, ':waiting' => 'Waiting',
+                            ':active' => 'Active', ':first_due' => $firstDue->format('Y-m-d H:i:s'),
+                            ':group_id' => $startGroupId, ':waiting' => 'Waiting',
                         ]);
                         if ($stmt->rowCount() !== 1) {
                             $pdo->rollBack();
@@ -149,7 +153,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $userId > 0) {
                                 $pdo->rollBack();
                                 $joinModal = ['type' => 'error', 'message' => 'The group membership changed before it could start. Refresh the page and try again.'];
                             } else {
-                                $firstDue = new DateTimeImmutable($lockedGroup['first_payment_due']);
                                 tokaCreateCycleRounds($pdo, $startGroupId, $cycleMembers, $firstDue, $lockedGroup['payment_frequency']);
                             }
 
@@ -580,6 +583,39 @@ $selectedGroupCount = $selectedTab === 'Active'
                     </button>
                 </section>
 
+                <section class="rules-section" aria-label="General Toka rules">
+                    <details class="rules-disclosure">
+                        <summary class="rules-summary">
+                            <span class="rules-summary-copy">
+                                <strong>General Toka Rules</strong>
+                                <small>Trust scores and group access</small>
+                            </span>
+                        </summary>
+                        <div class="rules-card">
+                            <section class="rules-group" aria-labelledby="trust-rules-heading">
+                                <h2 id="trust-rules-heading">Trust Score</h2>
+                                <p>Your trust score starts at 100 and stays between 0 and 100.</p>
+                                <ul>
+                                    <li>Pay on time: <strong>+5 points</strong>.</li>
+                                    <li>Pay 1–2 days late: <strong>−10 points</strong>.</li>
+                                    <li>Pay 3 or more days late: <strong>−25 points</strong>.</li>
+                                    <li>Miss payment after the 72-hour grace period: <strong>−50 points</strong>.</li>
+                                    <li>At 0 points, your account is automatically banned for “Trust score too low.”</li>
+                                </ul>
+                                <p>When a cycle is set up, members with higher scores are scheduled to receive first. Tied scores are randomized; the Co-operator is second-to-last and the Main Operator is last.</p>
+                            </section>
+                            <section class="rules-group" aria-labelledby="group-access-rules-heading">
+                                <h2 id="group-access-rules-heading">Group Access</h2>
+                                <ul>
+                                    <li>Until you complete your first group, you can have one waiting or active group at a time.</li>
+                                    <li>After completing a group, you can have up to two waiting or active groups at a time.</li>
+                                    <li>Completed groups do not count toward this limit.</li>
+                                </ul>
+                            </section>
+                        </div>
+                    </details>
+                </section>
+
                 <section class="group-list">
                     <?php foreach ($groups as $group): ?>
                         <?php $canStartGroup = $group['viewer_role'] === 'Main Operator'
@@ -779,6 +815,49 @@ $selectedGroupCount = $selectedTab === 'Active'
         const cards = document.querySelectorAll(".group-card");
         const groupEmptyState = document.getElementById("group-empty-state");
         const groupEmptyMessage = document.getElementById("group-empty-message");
+        const rulesDisclosure = document.querySelector(".rules-disclosure");
+        const rulesSummary = rulesDisclosure?.querySelector("summary");
+        const rulesCard = rulesDisclosure?.querySelector(".rules-card");
+        let rulesAreClosing = false;
+        let rulesCloseAnimationEnd = null;
+        rulesSummary?.addEventListener("click", event => {
+            event.preventDefault();
+            if (!rulesDisclosure || !rulesCard) return;
+
+            if (rulesAreClosing) {
+                if (rulesCloseAnimationEnd) rulesCard.removeEventListener("animationend", rulesCloseAnimationEnd);
+                rulesCard.getAnimations().forEach(animation => animation.cancel());
+                rulesCard.classList.remove("is-closing", "is-opening");
+                rulesAreClosing = false;
+                void rulesCard.offsetWidth;
+                rulesCard.classList.add("is-opening");
+                return;
+            }
+
+            if (!rulesDisclosure.open) {
+                rulesDisclosure.open = true;
+                rulesCard.classList.remove("is-closing", "is-opening");
+                void rulesCard.offsetWidth;
+                rulesCard.classList.add("is-opening");
+                return;
+            }
+
+            rulesCard.classList.remove("is-opening");
+            if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+                rulesDisclosure.open = false;
+                return;
+            }
+            rulesAreClosing = true;
+            rulesCard.classList.add("is-closing");
+            rulesCloseAnimationEnd = animationEvent => {
+                if (animationEvent.animationName !== "rules-roll-up") return;
+                rulesDisclosure.open = false;
+                rulesCard.classList.remove("is-closing");
+                rulesAreClosing = false;
+                rulesCloseAnimationEnd = null;
+            };
+            rulesCard.addEventListener("animationend", rulesCloseAnimationEnd);
+        });
 
         document.querySelectorAll(".group-card[data-group-url]").forEach(groupCard => {
             groupCard.addEventListener("click", event => {

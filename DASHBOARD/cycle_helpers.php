@@ -21,6 +21,28 @@ function tokaCycleGraceDeadline(DateTimeImmutable $targetDeadline): DateTimeImmu
     return $targetDeadline->modify('+' . tokaCycleGraceHours() . ' hours');
 }
 
+function tokaCycleFirstDueAfterWaiting(
+    string $createdAt,
+    string $selectedFirstDue,
+    ?DateTimeImmutable $startedAt = null
+): DateTimeImmutable {
+    $created = new DateTimeImmutable($createdAt);
+    $selectedDue = new DateTimeImmutable($selectedFirstDue);
+    $start = $startedAt ?? new DateTimeImmutable('now');
+    $calendarDays = (int) $created->setTime(0, 0)->diff($selectedDue->setTime(0, 0))->format('%r%a');
+
+    if ($calendarDays <= 0) {
+        $leadSeconds = max(0, $selectedDue->getTimestamp() - $created->getTimestamp());
+        return $start->modify('+' . $leadSeconds . ' seconds');
+    }
+
+    return $start->modify('+' . $calendarDays . ' days')->setTime(
+        (int) $selectedDue->format('H'),
+        (int) $selectedDue->format('i'),
+        (int) $selectedDue->format('s')
+    );
+}
+
 function tokaCycleGraceExpired(string $targetDeadline, ?DateTimeImmutable $now = null): bool
 {
     return ($now ?? new DateTimeImmutable('now')) >= tokaCycleGraceDeadline(new DateTimeImmutable($targetDeadline));
